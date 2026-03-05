@@ -1,0 +1,68 @@
+{
+  "name": "opinionated-telemetry",
+  "version": "0.1.0",
+  "description": "Opinionated OpenTelemetry instrumentation patterns: span reparenting, sync span dropping, baggage propagation, and library-specific helpers.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js",
+      "types": "./dist/esm/index.d.ts"
+    },
+    "./integrations/knex": {
+      "import": "./dist/esm/integrations/knex.js",
+      "require": "./dist/cjs/integrations/knex.js",
+      "types": "./dist/esm/integrations/knex.d.ts"
+    },
+    "./integrations/graphql": {
+      "import": "./dist/esm/integrations/graphql.js",
+      "require": "./dist/cjs/integrations/graphql.js",
+      "types": "./dist/esm/integrations/graphql.d.ts"
+    },
+    "./integrations/bull": {
+      "import": "./dist/esm/integrations/bull.js",
+      "require": "./dist/cjs/integrations/bull.js",
+      "types": "./dist/esm/integrations/bull.d.ts"
+    },
+    "./integrations/socket-io": {
+      "import": "./dist/esm/integrations/socket-io.js",
+      "require": "./dist/cjs/integrations/socket-io.js",
+      "types": "./dist/esm/integrations/socket-io.d.ts"
+    },
+    "./integrations/express": {
+      "import": "./dist/esm/integrations/express.js",
+      "require": "./dist/cjs/integrations/express.js",
+      "types": "./dist/esm/integrations/express.d.ts"
+    }
+  },
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
+  "scripts": {
+    "build": "npm run build:esm && npm run build:cjs",
+    "build:cjs": "tsc -p tsconfig.cjs.json && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",
+    "build:esm": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "format": "prettier --write '**/*.{ts,md,json}'",
+    "format:check": "prettier --check '**/*.{ts,md,json}'",
+    "lint:deps": "knip"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/instrumentation": "^0.213.0",
+    "@opentelemetry/resources": "^2.6.0",
+    "@opentelemetry/sdk-metrics": "^2.6.0",
+    "@opentelemetry/sdk-node": "^0.213.0",
+    "@opentelemetry/sdk-trace-base": "^2.6.0",
+    "@opentelemetry/semantic-conventions": "^1.40.0",
+    "@types/debug": "^4.1.12",
+    "debug": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "knip": "^5.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.5.0"
+  }
+}
