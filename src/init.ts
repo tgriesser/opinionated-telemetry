@@ -32,6 +32,7 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     baggageToAttributes = true,
     memoryDelta,
     onSpanAfterShutdown,
+    stuckSpanDetection,
     shutdownSignal = 'SIGTERM',
     instrumentations,
     additionalSpanProcessors = [],
@@ -61,6 +62,7 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     baggageToAttributes,
     memoryDelta,
     onSpanAfterShutdown,
+    stuckSpanDetection,
   })
   const spanProcessors = [...additionalSpanProcessors, filteringProcessor]
 

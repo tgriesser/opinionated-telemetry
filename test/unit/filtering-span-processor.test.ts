@@ -414,6 +414,229 @@ describe('FilteringSpanProcessor', () => {
     })
   })
 
+  describe('stuck span detection', () => {
+    it('detects and exports stuck span after threshold', async () => {
+      vi.useFakeTimers()
+
+      const { tracer, getSpans, processor } = createTestProvider({
+        dropSyncSpans: false,
+        stuckSpanDetection: {
+          thresholdMs: 100,
+          intervalMs: 50,
+        },
+      })
+
+      const span = tracer.startSpan('slow-op')
+
+      // Advance past threshold + interval
+      vi.advanceTimersByTime(150)
+
+      await processor.forceFlush()
+      const spans = getSpans()
+      const stuck = spans.find((s) => s.name === 'slow-op (incomplete)')
+      expect(stuck).toBeDefined()
+      expect(stuck!.attributes['stuck.is_snapshot']).toBe(true)
+      expect(stuck!.attributes['stuck.duration_ms']).toBeTypeOf('number')
+      expect(stuck!.attributes['stuck.duration_ms']).toBeGreaterThanOrEqual(100)
+
+      span.end()
+      await processor.shutdown()
+      vi.useRealTimers()
+    })
+
+    it('does not re-report same stuck span', async () => {
+      vi.useFakeTimers()
+
+      const { tracer, getSpans, processor } = createTestProvider({
+        dropSyncSpans: false,
+        stuckSpanDetection: {
+          thresholdMs: 100,
+          intervalMs: 50,
+        },
+      })
+
+      tracer.startSpan('stuck-once')
+
+      // First reap cycle
+      vi.advanceTimersByTime(150)
+      // Second reap cycle
+      vi.advanceTimersByTime(50)
+
+      await processor.forceFlush()
+      const stuckSpans = getSpans().filter(
+        (s) => s.name === 'stuck-once (incomplete)',
+      )
+      expect(stuckSpans).toHaveLength(1)
+
+      await processor.shutdown()
+      vi.useRealTimers()
+    })
+
+    it('cleans up tracking when real span ends', async () => {
+      vi.useFakeTimers()
+
+      const { tracer, getSpans, processor, exporter } = createTestProvider({
+        dropSyncSpans: false,
+        stuckSpanDetection: {
+          thresholdMs: 100,
+          intervalMs: 50,
+        },
+      })
+
+      const span = tracer.startSpan('will-end')
+
+      // Trigger stuck detection
+      vi.advanceTimersByTime(150)
+      await processor.forceFlush()
+      expect(
+        getSpans().find((s) => s.name === 'will-end (incomplete)'),
+      ).toBeDefined()
+
+      // End the real span and reset exporter
+      span.end()
+      exporter.reset()
+
+      // Start a new span with the same name, wait for it to be stuck
+      tracer.startSpan('will-end')
+      vi.advanceTimersByTime(150)
+      await processor.forceFlush()
+
+      // Should get a new stuck report (the old span ID was cleaned up)
+      expect(
+        getSpans().find((s) => s.name === 'will-end (incomplete)'),
+      ).toBeDefined()
+
+      await processor.shutdown()
+      vi.useRealTimers()
+    })
+
+    it('respects onStuckSpan returning false', async () => {
+      vi.useFakeTimers()
+
+      const { tracer, getSpans, processor } = createTestProvider({
+        dropSyncSpans: false,
+        stuckSpanDetection: {
+          thresholdMs: 100,
+          intervalMs: 50,
+          onStuckSpan: () => false,
+        },
+      })
+
+      tracer.startSpan('skip-me')
+      vi.advanceTimersByTime(150)
+
+      await processor.forceFlush()
+      expect(
+        getSpans().find((s) => s.name === 'skip-me (incomplete)'),
+      ).toBeUndefined()
+
+      await processor.shutdown()
+      vi.useRealTimers()
+    })
+
+    it('includes memory delta on stuck root span snapshot', async () => {
+      vi.useFakeTimers()
+
+      const { tracer, getSpans, processor } = createTestProvider({
+        dropSyncSpans: false,
+        stuckSpanDetection: {
+          thresholdMs: 100,
+          intervalMs: 50,
+        },
+      })
+
+      // Root span — no parent, so memory tracking kicks in
+      tracer.startSpan('stuck-root')
+
+      vi.advanceTimersByTime(150)
+
+      await processor.forceFlush()
+      const stuck = getSpans().find(
+        (s) => s.name === 'stuck-root (incomplete)',
+      )
+      expect(stuck).toBeDefined()
+      expect(stuck!.attributes['stuck.is_snapshot']).toBe(true)
+      expect(stuck!.attributes['memory.delta.rss']).toBeTypeOf('number')
+
+      await processor.shutdown()
+      vi.useRealTimers()
+    })
+
+    it('runs instrumentation onEnd hooks on stuck span snapshot', async () => {
+      vi.useFakeTimers()
+
+      const onEnd = vi.fn()
+      const mockInst = {
+        instrumentationName: '@test/stuck-hooks',
+        instrumentationVersion: '1.0.0',
+        setTracerProvider() {},
+        setMeterProvider() {},
+        getConfig() {
+          return {}
+        },
+        setConfig() {},
+        enable() {},
+        disable() {},
+      } as any
+
+      new OpinionatedInstrumentation(mockInst, {
+        onEnd,
+        renameSpanOnEnd: (span) => `enriched:${span.name}`,
+      })
+
+      const { provider, getSpans, processor } = createTestProvider({
+        dropSyncSpans: false,
+        stuckSpanDetection: {
+          thresholdMs: 100,
+          intervalMs: 50,
+        },
+      })
+
+      const scopedTracer = provider.getTracer('@test/stuck-hooks')
+      scopedTracer.startSpan('stuck-hooked')
+
+      vi.advanceTimersByTime(150)
+
+      await processor.forceFlush()
+      const stuck = getSpans().find(
+        (s) => s.name === 'enriched:stuck-hooked (incomplete)',
+      )
+      expect(stuck).toBeDefined()
+      expect(onEnd).toHaveBeenCalledOnce()
+
+      await processor.shutdown()
+      vi.useRealTimers()
+    })
+
+    it('is disabled by default', () => {
+      const { processor } = createTestProvider({
+        dropSyncSpans: false,
+      })
+
+      // No interval should be created — check via the private field
+      expect((processor as any)._stuckSpanInterval).toBeNull()
+      processor.shutdown()
+    })
+
+    it('clears interval on shutdown', async () => {
+      vi.useFakeTimers()
+
+      const { processor } = createTestProvider({
+        dropSyncSpans: false,
+        stuckSpanDetection: {
+          thresholdMs: 100,
+          intervalMs: 50,
+        },
+      })
+
+      expect((processor as any)._stuckSpanInterval).not.toBeNull()
+      await processor.shutdown()
+      expect((processor as any)._stuckSpanInterval).toBeNull()
+
+      vi.useRealTimers()
+    })
+  })
+
   describe('onSpanAfterShutdown', () => {
     it('calls onSpanAfterShutdown when a span ends after shutdown', async () => {
       const afterShutdown = vi.fn()

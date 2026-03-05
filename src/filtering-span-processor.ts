@@ -4,10 +4,10 @@ import type {
   SpanProcessor,
 } from '@opentelemetry/sdk-trace-base'
 import type { Context } from '@opentelemetry/api'
-import { propagation } from '@opentelemetry/api'
+import { ROOT_CONTEXT, propagation } from '@opentelemetry/api'
 import debugLib from 'debug'
 import { OpinionatedInstrumentation } from './opinionated-instrumentation.js'
-import type { SpanImpl } from '@opentelemetry/sdk-trace-base/build/src/Span.js'
+import { SpanImpl } from '@opentelemetry/sdk-trace-base/build/src/Span.js'
 
 const debug = debugLib('opin-tel:filtering-processor')
 const TICK_KEY = '__tick'
@@ -32,9 +32,18 @@ export interface MemoryDeltaConfig {
   arrayBuffers?: boolean
 }
 
+export interface StuckSpanConfig {
+  /** How long a span must be in-flight before it's considered stuck. Default: 30_000ms */
+  thresholdMs?: number
+  /** How often to check for stuck spans. Default: 5_000ms */
+  intervalMs?: number
+  /** Called when a stuck span is detected, before exporting. Can return false to skip. */
+  onStuckSpan?: (span: Span & ReadableSpan) => boolean | void
+}
+
 export interface FilteringSpanProcessorConfig {
   /** Drop spans that start and end in the same tick. Default: true */
-  dropSyncSpans?: true | ((span: Span & ReadableSpan) => boolean)
+  dropSyncSpans?: boolean | ((span: Span & ReadableSpan) => boolean)
   /** Enable reparenting for instrumentations with reparent: true. Default: true */
   enableReparenting?: boolean
   /** Propagate baggage entries as span attributes in onStart. Default: true */
@@ -49,6 +58,8 @@ export interface FilteringSpanProcessorConfig {
   memoryDelta?: boolean | MemoryDeltaConfig
   /** Called when a span ends after shutdown and won't be exported. Default: debug log */
   onSpanAfterShutdown?: (span: Span & ReadableSpan) => void
+  /** Enable stuck span detection. Default: false */
+  stuckSpanDetection?: boolean | StuckSpanConfig
 }
 
 export class FilteringSpanProcessor implements SpanProcessor {
@@ -64,6 +75,9 @@ export class FilteringSpanProcessor implements SpanProcessor {
   private _memoryFastPath = false
   /** When set, use full process.memoryUsage() and capture these keys/attribute names */
   private _memoryKeys: [MemoryDeltaKey, string][] = []
+  private _stuckSpanInterval: ReturnType<typeof setInterval> | null = null
+  private _reportedStuckSpans = new Set<string>()
+  private _stuckSpanConfig: StuckSpanConfig | null = null
 
   constructor(wrapped: SpanProcessor, config?: FilteringSpanProcessorConfig) {
     this._wrapped = wrapped
@@ -73,6 +87,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       baggageToAttributes: config?.baggageToAttributes ?? true,
       memoryDelta: config?.memoryDelta ?? true,
       onSpanAfterShutdown: config?.onSpanAfterShutdown,
+      stuckSpanDetection: config?.stuckSpanDetection ?? false,
     }
     const md = this._config.memoryDelta
     if (md === true) {
@@ -81,6 +96,16 @@ export class FilteringSpanProcessor implements SpanProcessor {
       this._memoryKeys = (Object.keys(md) as MemoryDeltaKey[])
         .filter((k) => md[k])
         .map((k) => [k, `memory.delta.${camelToSnake(k)}`])
+    }
+    if (this._config.stuckSpanDetection) {
+      const ssd = this._config.stuckSpanDetection
+      this._stuckSpanConfig = typeof ssd === 'object' ? ssd : {}
+      const intervalMs = this._stuckSpanConfig.intervalMs ?? 5_000
+      this._stuckSpanInterval = setInterval(
+        () => this._reapStuckSpans(),
+        intervalMs,
+      )
+      this._stuckSpanInterval.unref()
     }
   }
 
@@ -156,6 +181,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
   onEnd(span: SpanImpl): void {
     this._allSpans.delete(span)
+    this._reportedStuckSpans.delete(span.spanContext().spanId)
 
     // Drop sync spans
     if (this._config.dropSyncSpans) {
@@ -172,7 +198,101 @@ export class FilteringSpanProcessor implements SpanProcessor {
     // Reopen the span for additional modifications in the onEnd
     span['_ended'] = false
 
-    // Check opinionated options for rename/onEnd hooks
+    this._enrichSpan(span)
+
+    // Reparenting drop decision (not part of enrichment)
+    if (span.parentSpanContext && this._config.enableReparenting) {
+      span['_ended'] = true
+
+      // Drop spans that were marked for reparenting
+      const shouldDropSpan = this._reparentSpans.has(span.spanContext().spanId)
+      if (shouldDropSpan) {
+        this._reparentSpans.delete(span.spanContext().spanId)
+        debug('dropping reparented span: %s', span.name)
+        return
+      }
+    }
+
+    if (this._didShutdown) {
+      this._onSpanAfterShutdown(span)
+      return
+    }
+
+    this._wrapped.onEnd(span)
+  }
+
+  shutdown(): Promise<void> {
+    debug('shutting down')
+    this._didShutdown = true
+    if (this._stuckSpanInterval) {
+      clearInterval(this._stuckSpanInterval)
+      this._stuckSpanInterval = null
+    }
+    return this._wrapped.shutdown()
+  }
+
+  forceFlush(): Promise<void> {
+    return this._wrapped.forceFlush()
+  }
+
+  private _reapStuckSpans(): void {
+    if (!this._stuckSpanConfig) return
+    const thresholdMs = this._stuckSpanConfig.thresholdMs ?? 30_000
+    const nowMs = Date.now()
+
+    for (const span of this._allSpans) {
+      const readable = span as Span & ReadableSpan
+      const startMs = readable.startTime[0] * 1e3 + readable.startTime[1] / 1e6
+      const durationMs = nowMs - startMs
+
+      if (durationMs < thresholdMs) continue
+
+      const spanId = span.spanContext().spanId
+      if (this._reportedStuckSpans.has(spanId)) continue
+
+      if (this._stuckSpanConfig.onStuckSpan) {
+        if (this._stuckSpanConfig.onStuckSpan(readable) === false) continue
+      }
+
+      this._reportedStuckSpans.add(spanId)
+      debug(
+        'stuck span detected: %s (duration=%dms)',
+        readable.name,
+        durationMs,
+      )
+
+      const snapshotSpan = new SpanImpl({
+        resource: readable.resource,
+        scope: readable.instrumentationScope,
+        context: ROOT_CONTEXT,
+        spanContext: span.spanContext(),
+        name: `${readable.name} (incomplete)`,
+        kind: readable.kind,
+        parentSpanContext: readable.parentSpanContext,
+        links: readable.links,
+        startTime: readable.startTime,
+        attributes: {
+          ...readable.attributes,
+          'stuck.duration_ms': Math.round(durationMs),
+          'stuck.is_snapshot': true,
+        },
+        spanLimits: (span as any)._spanLimits,
+        spanProcessor: this._wrapped,
+      })
+
+      // Copy memory start value so _enrichSpan can compute the delta
+      const memStart = (readable as any)[MEMORY_KEY]
+      if (memStart != null) {
+        Object.defineProperty(snapshotSpan, MEMORY_KEY, { value: memStart })
+      }
+
+      this._enrichSpan(snapshotSpan)
+      snapshotSpan.end()
+    }
+  }
+
+  private _enrichSpan(span: SpanImpl): void {
+    // Instrumentation hooks
     const scope = (span as any).instrumentationScope?.name
     if (scope) {
       const opts = OpinionatedInstrumentation.getOptions(scope)
@@ -210,14 +330,13 @@ export class FilteringSpanProcessor implements SpanProcessor {
       }
     }
 
-    // Reparenting logic
+    // Reparenting attribute inheritance
     if (!span.parentSpanContext) {
       this._rootSpans.delete(span.spanContext().traceId)
     } else if (this._config.enableReparenting) {
       const parentSpanId = (span as any).parentSpanContext.spanId
       let reparentSpan = this._reparentSpans.get(parentSpanId)
       if (reparentSpan) {
-        // Walk up the reparent chain to find what we're actually reparenting to
         while (
           reparentSpan.parentSpanContext?.spanId &&
           this._reparentSpans.has(reparentSpan.parentSpanContext?.spanId)
@@ -237,36 +356,14 @@ export class FilteringSpanProcessor implements SpanProcessor {
             span.setAttribute(key, val)
           }
         }
-        // @ts-expect-error - readonly attribute, but we know what we're doing
-        span['parentSpanContext'] = reparentSpan.parentSpanContext
-        span['_ended'] = true
-      }
-
-      // Drop spans that were marked for reparenting
-      const shouldDropSpan = this._reparentSpans.has(span.spanContext().spanId)
-      if (shouldDropSpan) {
-        this._reparentSpans.delete(span.spanContext().spanId)
-        debug('dropping reparented span: %s', span.name)
-        return
+        // Skip parentSpanContext reassignment for snapshots
+        if (!span.attributes['stuck.is_snapshot']) {
+          // @ts-expect-error - readonly attribute, but we know what we're doing
+          span['parentSpanContext'] = reparentSpan.parentSpanContext
+          span['_ended'] = true
+        }
       }
     }
-
-    if (this._didShutdown) {
-      this._onSpanAfterShutdown(span)
-      return
-    }
-
-    this._wrapped.onEnd(span)
-  }
-
-  shutdown(): Promise<void> {
-    debug('shutting down')
-    this._didShutdown = true
-    return this._wrapped.shutdown()
-  }
-
-  forceFlush(): Promise<void> {
-    return this._wrapped.forceFlush()
   }
 
   private _onSpanAfterShutdown(span: Span & ReadableSpan): void {

@@ -8,7 +8,10 @@ import type {
 import type { MetricReader } from '@opentelemetry/sdk-metrics'
 import type { Instrumentation } from '@opentelemetry/instrumentation'
 import type { OpinionatedInstrumentation } from './opinionated-instrumentation.js'
-import type { MemoryDeltaConfig } from './filtering-span-processor.js'
+import type {
+  MemoryDeltaConfig,
+  StuckSpanConfig,
+} from './filtering-span-processor.js'
 
 export interface OpinionatedTelemetryConfig {
   serviceName: string
@@ -32,6 +35,8 @@ export interface OpinionatedTelemetryConfig {
   memoryDelta?: boolean | MemoryDeltaConfig
   /** Called when a span ends after shutdown and won't be exported. Default: debug log */
   onSpanAfterShutdown?: (span: Span & ReadableSpan) => void
+  /** Enable stuck span detection. Default: false */
+  stuckSpanDetection?: boolean | StuckSpanConfig
   /** Signal to register shutdown handler on. Default: 'SIGTERM' */
   shutdownSignal?: string
   instrumentations: Array<Instrumentation | OpinionatedInstrumentation>

@@ -5,6 +5,7 @@ export { FilteringSpanProcessor } from './filtering-span-processor.js'
 export type {
   FilteringSpanProcessorConfig,
   MemoryDeltaConfig,
+  StuckSpanConfig,
 } from './filtering-span-processor.js'
 
 // Baggage utilities
