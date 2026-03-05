@@ -19,11 +19,13 @@ export interface FilteringSpanProcessorConfig {
   enableReparenting?: boolean
   /** Propagate baggage entries as span attributes in onStart. Default: true */
   baggageToAttributes?: boolean
+  /** Called when a span ends after shutdown and won't be exported. Default: debug log */
+  onSpanAfterShutdown?: (span: Span & ReadableSpan) => void
 }
 
 export class FilteringSpanProcessor implements SpanProcessor {
   private _wrapped: SpanProcessor
-  private _config: Required<FilteringSpanProcessorConfig>
+  private _config: FilteringSpanProcessorConfig
   private _reparentSpans = new Map<string, Span & ReadableSpan>()
   private _rootSpans = new Map<string, ReadableSpan>()
   private _allSpans = new Set<Span>()
@@ -37,6 +39,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       dropSyncSpans: config?.dropSyncSpans ?? true,
       enableReparenting: config?.enableReparenting ?? true,
       baggageToAttributes: config?.baggageToAttributes ?? true,
+      onSpanAfterShutdown: config?.onSpanAfterShutdown,
     }
   }
 
@@ -175,6 +178,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     }
 
     if (this._didShutdown) {
+      this._onSpanAfterShutdown(span)
       return
     }
 
@@ -189,6 +193,14 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
   forceFlush(): Promise<void> {
     return this._wrapped.forceFlush()
+  }
+
+  private _onSpanAfterShutdown(span: Span & ReadableSpan): void {
+    if (this._config.onSpanAfterShutdown) {
+      this._config.onSpanAfterShutdown(span)
+    } else {
+      debug('span after shutdown, not exported: %s', span.name)
+    }
   }
 
   private _scheduleNextTick(): void {

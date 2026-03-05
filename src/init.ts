@@ -30,6 +30,7 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     dropSyncSpans = true,
     enableReparenting = true,
     baggageToAttributes = true,
+    onSpanAfterShutdown,
     shutdownSignal = 'SIGTERM',
     instrumentations,
     additionalSpanProcessors = [],
@@ -59,6 +60,7 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
       dropSyncSpans,
       enableReparenting,
       baggageToAttributes,
+      onSpanAfterShutdown,
     })
     spanProcessors.push(filteringProcessor)
   }

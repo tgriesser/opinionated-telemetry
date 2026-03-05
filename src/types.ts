@@ -21,6 +21,8 @@ export interface OpinionatedTelemetryConfig {
   enableReparenting?: boolean
   /** Propagate baggage entries as span attributes. Default: true */
   baggageToAttributes?: boolean
+  /** Called when a span ends after shutdown and won't be exported. Default: debug log */
+  onSpanAfterShutdown?: (span: Span & ReadableSpan) => void
   /** Signal to register shutdown handler on. Default: 'SIGTERM' */
   shutdownSignal?: string
   instrumentations: Array<Instrumentation | OpinionatedInstrumentation>
