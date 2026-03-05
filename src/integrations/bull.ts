@@ -149,7 +149,7 @@ export function otelInitBull(Bull: any, config?: BullOtelConfig): void {
               span.recordException(err)
               span.setStatus({
                 code: SpanStatusCode.ERROR,
-                message: err.message,
+                message: err?.message,
               })
               span.end()
               throw err

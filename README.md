@@ -110,7 +110,9 @@ import { createAutoInstrumentHook } from 'opinionated-telemetry'
 
 createAutoInstrumentHook({
   tracer: getTracer('auto-instrument'),
-  instrumentPaths: [{ base: '/app/src', dirs: ['handlers', 'helpers', 'lib'] }],
+  instrumentPaths: [
+    { base: '/app/src', dirs: ['controllers', 'helpers', 'lib'] },
+  ],
   ignoreRules: [
     'helpers/health-check',
     { file: 'helpers/utils', exports: ['internalFn'] },

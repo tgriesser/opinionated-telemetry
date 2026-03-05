@@ -1,11 +1,16 @@
+import { crc32 } from 'node:zlib'
 import { trace } from '@opentelemetry/api'
 import debugLib from 'debug'
 
 const debug = debugLib('opin-tel:knex')
 
 export interface KnexOtelConfig {
-  /** Custom hash function for query+bindings. Default uses JSON.stringify */
+  /** Custom hash function for query+bindings. Default uses CRC32 */
   hashFn?: (input: any) => string
+  /** Custom function to sanitize a single binding value */
+  sanitizeBindingFn?: (value: any) => any
+  /** Custom function to sanitize an array of bindings into a string */
+  sanitizeBindingsFn?: (bindings: any[]) => string
   /** Capture sanitized bindings. Default: true */
   captureBindings?: boolean
   /** Capture pool stats. Default: true */
@@ -43,11 +48,14 @@ const POOL_STATS: Record<string, string> = {
 }
 const POOL_STAT_KEYS = Object.keys(POOL_STATS)
 
-function defaultHash(input: any): string {
-  return JSON.stringify(input)
+/**
+ * Hashes input with CRC32 via zlib (fast native binding).
+ */
+export function defaultHash(input: any): string {
+  return crc32(JSON.stringify(input)).toString(16)
 }
 
-function sanitizeBinding(value: any): any {
+export function sanitizeBinding(value: any): any {
   switch (typeof value) {
     case 'boolean':
     case 'number':
@@ -76,7 +84,7 @@ function sanitizeBinding(value: any): any {
   }
 }
 
-function sanitizeBindings(bindings: any[]): string {
+export function sanitizeBindings(bindings: any[]): string {
   return JSON.stringify(bindings.map(sanitizeBinding))
 }
 
@@ -91,6 +99,7 @@ export function otelInitKnex(
   config?: KnexOtelConfig,
 ): () => void {
   const hashFn = config?.hashFn ?? defaultHash
+  const sanitizeFn = config?.sanitizeBindingsFn ?? sanitizeBindings
   const captureBindings = config?.captureBindings ?? true
   const capturePoolStats = config?.capturePoolStats ?? true
 
@@ -121,7 +130,7 @@ export function otelInitKnex(
     }
 
     if (captureBindings && Array.isArray(info.bindings)) {
-      toSet[ATTRS.BINDINGS] = sanitizeBindings(info.bindings)
+      toSet[ATTRS.BINDINGS] = sanitizeFn(info.bindings)
       toSet[ATTRS.QUERY_HASH] = hashFn([info.sql, info.bindings])
     }
 

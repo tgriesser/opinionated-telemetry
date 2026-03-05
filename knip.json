@@ -1,4 +1,8 @@
 {
   "project": ["src/**/*.ts"],
-  "ignoreDependencies": ["graphql"]
+  "ignoreDependencies": [
+    "@opentelemetry/context-async-hooks",
+    "better-sqlite3",
+    "@types/better-sqlite3"
+  ]
 }

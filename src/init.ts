@@ -30,6 +30,7 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     dropSyncSpans = true,
     enableReparenting = true,
     baggageToAttributes = true,
+    memoryDelta,
     onSpanAfterShutdown,
     shutdownSignal = 'SIGTERM',
     instrumentations,
@@ -53,17 +54,15 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
   })
 
   // Build span processors
-  const spanProcessors = [...additionalSpanProcessors]
-  if (traceExporter) {
-    const batchProcessor = new BatchSpanProcessor(traceExporter)
-    const filteringProcessor = new FilteringSpanProcessor(batchProcessor, {
-      dropSyncSpans,
-      enableReparenting,
-      baggageToAttributes,
-      onSpanAfterShutdown,
-    })
-    spanProcessors.push(filteringProcessor)
-  }
+  const batchProcessor = new BatchSpanProcessor(traceExporter)
+  const filteringProcessor = new FilteringSpanProcessor(batchProcessor, {
+    dropSyncSpans,
+    enableReparenting,
+    baggageToAttributes,
+    memoryDelta,
+    onSpanAfterShutdown,
+  })
+  const spanProcessors = [...additionalSpanProcessors, filteringProcessor]
 
   const sdk = new NodeSDK({
     resource: resourceFromAttributes({

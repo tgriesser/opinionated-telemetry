@@ -4,9 +4,19 @@ import { withBaggage } from '../baggage.js'
 
 const debug = debugLib('opin-tel:graphql')
 
+export interface ShouldWrapResolverInfo {
+  field: any
+  fieldName: string
+  type: any
+  typeName: string
+  resolver: (...args: any[]) => any
+}
+
 export interface GraphqlOtelConfig {
-  /** Custom field resolver to compare against (instead of graphql's defaultFieldResolver) */
-  fieldResolver?: (...args: any[]) => any
+  /** The default field resolver from graphql (i.e. graphql.defaultFieldResolver). Required. */
+  fieldResolver: (...args: any[]) => any
+  /** Optional filter for which resolvers to wrap. Return false to skip. Default: wraps all custom resolvers. */
+  shouldWrapResolver?: (info: ShouldWrapResolverInfo) => boolean
 }
 
 /**
@@ -16,20 +26,8 @@ export interface GraphqlOtelConfig {
  * For each wrapped resolver, sets baggage with the current graphql attributes
  * from the active span, making them available to all child spans.
  */
-export function otelInitGraphql(schema: any, config?: GraphqlOtelConfig): void {
-  let defaultResolver: ((...args: any[]) => any) | undefined
-  if (config?.fieldResolver) {
-    defaultResolver = config.fieldResolver
-  } else {
-    try {
-      // Dynamic import to avoid hard dep on graphql
-      const graphql = require('graphql')
-      defaultResolver = graphql.defaultFieldResolver
-    } catch {
-      debug('graphql module not found, skipping resolver wrapping')
-      return
-    }
-  }
+export function otelInitGraphql(schema: any, config: GraphqlOtelConfig): void {
+  const { fieldResolver, shouldWrapResolver } = config
 
   const typeMap = schema.getTypeMap()
   for (const [typeName, type] of Object.entries(typeMap)) {
@@ -37,13 +35,31 @@ export function otelInitGraphql(schema: any, config?: GraphqlOtelConfig): void {
     if (!type || typeof (type as any).getFields !== 'function') continue
 
     const fields = (type as any).getFields()
-    for (const [, field] of Object.entries<any>(fields)) {
+    for (const [fieldName, field] of Object.entries<any>(fields)) {
       const originalResolve = field.resolve
-      if (!originalResolve || originalResolve === defaultResolver) {
+      if (!originalResolve || originalResolve === fieldResolver) {
         continue
       }
 
-      debug('wrapping %s.%s', typeName, field.name)
+      if (
+        shouldWrapResolver &&
+        !shouldWrapResolver({
+          field,
+          fieldName,
+          type,
+          typeName,
+          resolver: originalResolve,
+        })
+      ) {
+        debug(
+          'skipping %s.%s (shouldWrapResolver returned false)',
+          typeName,
+          fieldName,
+        )
+        continue
+      }
+
+      debug('wrapping %s.%s', typeName, fieldName)
       const spanAttrs = new WeakMap<any, Record<string, any>>()
       field.resolve = function otelWrappedResolver(
         source: any,

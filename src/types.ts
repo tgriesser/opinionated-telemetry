@@ -8,11 +8,12 @@ import type {
 import type { MetricReader } from '@opentelemetry/sdk-metrics'
 import type { Instrumentation } from '@opentelemetry/instrumentation'
 import type { OpinionatedInstrumentation } from './opinionated-instrumentation.js'
+import type { MemoryDeltaConfig } from './filtering-span-processor.js'
 
 export interface OpinionatedTelemetryConfig {
   serviceName: string
   resourceAttributes?: Record<string, string>
-  traceExporter?: SpanExporter
+  traceExporter: SpanExporter
   metricReader?: MetricReader
   spanLimits?: SpanLimits
   /** Drop spans that start and end in the same tick. Default: true */
@@ -21,6 +22,14 @@ export interface OpinionatedTelemetryConfig {
   enableReparenting?: boolean
   /** Propagate baggage entries as span attributes. Default: true */
   baggageToAttributes?: boolean
+  /**
+   * Capture memory usage deltas on root spans.
+   * - `true` (default): capture rss delta only via the fast `process.memoryUsage.rss()` path
+   * - `MemoryDeltaConfig`: pick specific fields (rss, heapTotal, heapUsed, external, arrayBuffers)
+   *   — uses `process.memoryUsage()` which includes V8 heap stats
+   * - `false`: disable
+   */
+  memoryDelta?: boolean | MemoryDeltaConfig
   /** Called when a span ends after shutdown and won't be exported. Default: debug log */
   onSpanAfterShutdown?: (span: Span & ReadableSpan) => void
   /** Signal to register shutdown handler on. Default: 'SIGTERM' */

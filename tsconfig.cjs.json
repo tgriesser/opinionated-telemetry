@@ -6,5 +6,6 @@
     "outDir": "./dist/cjs",
     "declaration": false,
     "declarationMap": false
-  }
+  },
+  "exclude": ["src/auto-instrument-hook-esm.ts"]
 }

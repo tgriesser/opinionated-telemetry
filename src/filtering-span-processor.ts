@@ -11,6 +11,26 @@ import type { SpanImpl } from '@opentelemetry/sdk-trace-base/build/src/Span.js'
 
 const debug = debugLib('opin-tel:filtering-processor')
 const TICK_KEY = '__tick'
+const MEMORY_KEY = '__memStart'
+
+function camelToSnake(s: string): string {
+  return s.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)
+}
+
+export type MemoryDeltaKey = keyof NodeJS.MemoryUsage
+
+export interface MemoryDeltaConfig {
+  /** Capture rss delta */
+  rss?: boolean
+  /** Capture heapTotal delta */
+  heapTotal?: boolean
+  /** Capture heapUsed delta */
+  heapUsed?: boolean
+  /** Capture external delta */
+  external?: boolean
+  /** Capture arrayBuffers delta */
+  arrayBuffers?: boolean
+}
 
 export interface FilteringSpanProcessorConfig {
   /** Drop spans that start and end in the same tick. Default: true */
@@ -19,6 +39,14 @@ export interface FilteringSpanProcessorConfig {
   enableReparenting?: boolean
   /** Propagate baggage entries as span attributes in onStart. Default: true */
   baggageToAttributes?: boolean
+  /**
+   * Capture memory usage deltas on root spans.
+   * - `true` (default): capture rss delta only via the fast `process.memoryUsage.rss()` path
+   * - `MemoryDeltaConfig`: pick specific fields (rss, heapTotal, heapUsed, external, arrayBuffers)
+   *   — uses `process.memoryUsage()` which includes V8 heap stats
+   * - `false`: disable
+   */
+  memoryDelta?: boolean | MemoryDeltaConfig
   /** Called when a span ends after shutdown and won't be exported. Default: debug log */
   onSpanAfterShutdown?: (span: Span & ReadableSpan) => void
 }
@@ -32,6 +60,10 @@ export class FilteringSpanProcessor implements SpanProcessor {
   private _didShutdown = false
   private _nextTickScheduled = false
   private _currentTick = 0
+  /** When true, use fast process.memoryUsage.rss() path (rss only) */
+  private _memoryFastPath = false
+  /** When set, use full process.memoryUsage() and capture these keys/attribute names */
+  private _memoryKeys: [MemoryDeltaKey, string][] = []
 
   constructor(wrapped: SpanProcessor, config?: FilteringSpanProcessorConfig) {
     this._wrapped = wrapped
@@ -39,11 +71,21 @@ export class FilteringSpanProcessor implements SpanProcessor {
       dropSyncSpans: config?.dropSyncSpans ?? true,
       enableReparenting: config?.enableReparenting ?? true,
       baggageToAttributes: config?.baggageToAttributes ?? true,
+      memoryDelta: config?.memoryDelta ?? true,
       onSpanAfterShutdown: config?.onSpanAfterShutdown,
+    }
+    const md = this._config.memoryDelta
+    if (md === true) {
+      this._memoryFastPath = true
+    } else if (md && typeof md === 'object') {
+      this._memoryKeys = (Object.keys(md) as MemoryDeltaKey[])
+        .filter((k) => md[k])
+        .map((k) => [k, `memory.delta.${camelToSnake(k)}`])
     }
   }
 
   onStart(span: Span & ReadableSpan, ctx: Context): void {
+    // Track all spans, for both dead span detection as well as knowing how many spans are open concurrently
     this._allSpans.add(span)
 
     // Track tick for sync span detection
@@ -71,6 +113,15 @@ export class FilteringSpanProcessor implements SpanProcessor {
       const spanCtx = span.spanContext()
       if (!this._rootSpans.has(spanCtx.traceId)) {
         this._rootSpans.set(spanCtx.traceId, span)
+        if (this._memoryFastPath) {
+          Object.defineProperty(span, MEMORY_KEY, {
+            value: process.memoryUsage.rss(),
+          })
+        } else if (this._memoryKeys.length > 0) {
+          Object.defineProperty(span, MEMORY_KEY, {
+            value: process.memoryUsage(),
+          })
+        }
       } else {
         debug(
           'multiple root spans for trace=%s span=%s',
@@ -118,6 +169,9 @@ export class FilteringSpanProcessor implements SpanProcessor {
       }
     }
 
+    // Reopen the span for additional modifications in the onEnd
+    span['_ended'] = false
+
     // Check opinionated options for rename/onEnd hooks
     const scope = (span as any).instrumentationScope?.name
     if (scope) {
@@ -131,6 +185,27 @@ export class FilteringSpanProcessor implements SpanProcessor {
         }
         if (opts.onEnd) {
           opts.onEnd(span)
+        }
+      }
+    }
+
+    // Memory delta for root spans
+    if (!span.parentSpanContext) {
+      const startMem = (span as any)[MEMORY_KEY]
+      if (startMem != null) {
+        if (this._memoryFastPath) {
+          span.setAttribute(
+            'memory.delta.rss',
+            process.memoryUsage.rss() - (startMem as number),
+          )
+        } else {
+          const endMem = process.memoryUsage()
+          for (const [key, attr] of this._memoryKeys) {
+            span.setAttribute(
+              attr,
+              endMem[key] - (startMem as NodeJS.MemoryUsage)[key],
+            )
+          }
         }
       }
     }
@@ -157,10 +232,9 @@ export class FilteringSpanProcessor implements SpanProcessor {
           parentSpanId,
           reparentSpan.parentSpanContext?.spanId,
         )
-        span['_ended'] = false
         for (const [key, val] of Object.entries(reparentSpan.attributes)) {
-          if (!(span as any).attributes[key]) {
-            span.setAttribute(key, val!)
+          if (!span.attributes[key]) {
+            span.setAttribute(key, val)
           }
         }
         // @ts-expect-error - readonly attribute, but we know what we're doing
