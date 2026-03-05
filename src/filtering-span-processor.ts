@@ -5,6 +5,7 @@ import type {
 } from '@opentelemetry/sdk-trace-base'
 import type { Context } from '@opentelemetry/api'
 import { ROOT_CONTEXT, propagation } from '@opentelemetry/api'
+import { performance } from 'node:perf_hooks'
 import debugLib from 'debug'
 import { OpinionatedInstrumentation } from './opinionated-instrumentation.js'
 import { SpanImpl } from '@opentelemetry/sdk-trace-base/build/src/Span.js'
@@ -12,6 +13,7 @@ import { SpanImpl } from '@opentelemetry/sdk-trace-base/build/src/Span.js'
 const debug = debugLib('opin-tel:filtering-processor')
 const TICK_KEY = '__tick'
 const MEMORY_KEY = '__memStart'
+const ELU_KEY = '__eluStart'
 
 function camelToSnake(s: string): string {
   return s.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)
@@ -56,6 +58,8 @@ export interface FilteringSpanProcessorConfig {
    * - `false`: disable
    */
   memoryDelta?: boolean | MemoryDeltaConfig
+  /** Capture event loop utilization on root spans. Default: true */
+  eventLoopUtilization?: boolean
   /** Called when a span ends after shutdown and won't be exported. Default: debug log */
   onSpanAfterShutdown?: (span: Span & ReadableSpan) => void
   /** Enable stuck span detection. Default: false */
@@ -75,6 +79,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
   private _memoryFastPath = false
   /** When set, use full process.memoryUsage() and capture these keys/attribute names */
   private _memoryKeys: [MemoryDeltaKey, string][] = []
+  private _eventLoopUtilization = false
   private _stuckSpanInterval: ReturnType<typeof setInterval> | null = null
   private _reportedStuckSpans = new Set<string>()
   private _stuckSpanConfig: StuckSpanConfig | null = null
@@ -86,6 +91,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       enableReparenting: config?.enableReparenting ?? true,
       baggageToAttributes: config?.baggageToAttributes ?? true,
       memoryDelta: config?.memoryDelta ?? true,
+      eventLoopUtilization: config?.eventLoopUtilization ?? true,
       onSpanAfterShutdown: config?.onSpanAfterShutdown,
       stuckSpanDetection: config?.stuckSpanDetection ?? false,
     }
@@ -97,6 +103,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
         .filter((k) => md[k])
         .map((k) => [k, `memory.delta.${camelToSnake(k)}`])
     }
+    this._eventLoopUtilization = !!this._config.eventLoopUtilization
     if (this._config.stuckSpanDetection) {
       const ssd = this._config.stuckSpanDetection
       this._stuckSpanConfig = typeof ssd === 'object' ? ssd : {}
@@ -145,6 +152,11 @@ export class FilteringSpanProcessor implements SpanProcessor {
         } else if (this._memoryKeys.length > 0) {
           Object.defineProperty(span, MEMORY_KEY, {
             value: process.memoryUsage(),
+          })
+        }
+        if (this._eventLoopUtilization) {
+          Object.defineProperty(span, ELU_KEY, {
+            value: performance.eventLoopUtilization(),
           })
         }
       } else {
@@ -280,10 +292,14 @@ export class FilteringSpanProcessor implements SpanProcessor {
         spanProcessor: this._wrapped,
       })
 
-      // Copy memory start value so _enrichSpan can compute the delta
+      // Copy start values so _enrichSpan can compute deltas
       const memStart = (readable as any)[MEMORY_KEY]
       if (memStart != null) {
         Object.defineProperty(snapshotSpan, MEMORY_KEY, { value: memStart })
+      }
+      const eluStart = (readable as any)[ELU_KEY]
+      if (eluStart != null) {
+        Object.defineProperty(snapshotSpan, ELU_KEY, { value: eluStart })
       }
 
       this._enrichSpan(snapshotSpan)
@@ -327,6 +343,15 @@ export class FilteringSpanProcessor implements SpanProcessor {
             )
           }
         }
+      }
+    }
+
+    // Event loop utilization for root spans
+    if (!span.parentSpanContext) {
+      const startElu = (span as any)[ELU_KEY]
+      if (startElu != null) {
+        const delta = performance.eventLoopUtilization(startElu)
+        span.setAttribute('elu.utilization', delta.utilization)
       }
     }
 

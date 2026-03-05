@@ -414,6 +414,58 @@ describe('FilteringSpanProcessor', () => {
     })
   })
 
+  describe('eventLoopUtilization', () => {
+    it('captures elu.utilization on root spans by default', async () => {
+      const { tracer, getSpans, shutdown } = createTestProvider()
+
+      const span = tracer.startSpan('root-span')
+      await nextTick()
+      span.end()
+
+      await shutdown()
+
+      const root = getSpans().find((s) => s.name === 'root-span')
+      expect(root).toBeDefined()
+      expect(root!.attributes['elu.utilization']).toBeTypeOf('number')
+      const elu = root!.attributes['elu.utilization'] as number
+      expect(elu).toBeGreaterThanOrEqual(0)
+      expect(elu).toBeLessThanOrEqual(1)
+    })
+
+    it('does not capture elu on child spans', async () => {
+      const { tracer, getSpans, shutdown } = createTestProvider()
+
+      await tracer.startActiveSpan('root', async (root) => {
+        const child = tracer.startSpan('child')
+        await nextTick()
+        child.end()
+        root.end()
+      })
+
+      await shutdown()
+
+      const child = getSpans().find((s) => s.name === 'child')
+      expect(child).toBeDefined()
+      expect(child!.attributes['elu.utilization']).toBeUndefined()
+    })
+
+    it('does not capture elu when disabled', async () => {
+      const { tracer, getSpans, shutdown } = createTestProvider({
+        eventLoopUtilization: false,
+      })
+
+      const span = tracer.startSpan('root-span')
+      await nextTick()
+      span.end()
+
+      await shutdown()
+
+      const root = getSpans().find((s) => s.name === 'root-span')
+      expect(root).toBeDefined()
+      expect(root!.attributes['elu.utilization']).toBeUndefined()
+    })
+  })
+
   describe('stuck span detection', () => {
     it('detects and exports stuck span after threshold', async () => {
       vi.useFakeTimers()
@@ -557,6 +609,7 @@ describe('FilteringSpanProcessor', () => {
       expect(stuck).toBeDefined()
       expect(stuck!.attributes['stuck.is_snapshot']).toBe(true)
       expect(stuck!.attributes['memory.delta.rss']).toBeTypeOf('number')
+      expect(stuck!.attributes['elu.utilization']).toBeTypeOf('number')
 
       await processor.shutdown()
       vi.useRealTimers()
