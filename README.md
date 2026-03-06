@@ -1,16 +1,18 @@
 # opinionated-telemetry
 
-Opinionated OpenTelemetry instrumentation patterns extracted for reuse across Node.js projects.
+Opinionated OpenTelemetry instrumentation patterns extracted from years of learnings from real-world o11y, meant for reuse across Node.js projects. The defaults included may or may not be right for you, be sure to read the options carefully.
+
+Best suited for use with [Honeycomb](https://www.honeycomb.io/)
 
 ## Features
 
+- **Stuck span detection** -- detects in-flight spans exceeding a threshold and exports diagnostic snapshots
 - **Sync span dropping** -- automatically drops spans that start and end in the same tick
 - **Span reparenting** -- drops intermediate spans (e.g. knex, graphql) and merges their attributes into child spans
 - **Baggage propagation** -- propagates baggage entries as span attributes on all child spans
 - **Memory delta tracking** -- captures RSS (or detailed heap) memory deltas on root spans
 - **Event loop utilization** -- captures event loop utilization (0-1) on all spans
-- **Stuck span detection** -- detects in-flight spans exceeding a threshold and exports diagnostic snapshots
-- **Auto-instrumentation** -- wraps exported async functions with spans via `Module._load` patching
+- **Auto-instrumentation** -- wraps exported async functions with spans via `ESM` or `Module._load` patching
 - **Integration helpers** -- knex, graphql, bull, socket.io, express
 
 ## Install

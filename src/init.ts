@@ -41,8 +41,6 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
 
   debug('initializing service=%s', serviceName)
 
-  // Unwrap OpinionatedInstrumentation instances for NodeSDK
-  // (their constructors already registered in the static registry)
   const unwrappedInstrumentations = instrumentations.map((inst) => {
     if (inst instanceof OpinionatedInstrumentation) {
       debug(
@@ -52,10 +50,10 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
       )
       return inst.instrumentation
     }
+    debug('registered otel instrumentation: %s', inst.instrumentationName)
     return inst
   })
 
-  // Build span processors
   const batchProcessor = new BatchSpanProcessor(traceExporter)
   const filteringProcessor = new FilteringSpanProcessor(batchProcessor, {
     dropSyncSpans,

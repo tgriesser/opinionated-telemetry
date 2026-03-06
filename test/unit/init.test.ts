@@ -3,6 +3,7 @@ import { InMemorySpanExporter } from '@opentelemetry/sdk-trace-base'
 import type { SpanProcessor, ReadableSpan } from '@opentelemetry/sdk-trace-base'
 import { trace } from '@opentelemetry/api'
 import { opinionatedTelemetryInit } from '../../src/init.js'
+import { OpinionatedInstrumentation } from '../../src/opinionated-instrumentation.js'
 import { cleanupOtel, nextTick } from '../helpers.js'
 
 function createExporter() {
@@ -157,5 +158,100 @@ describe('opinionatedTelemetryInit', () => {
 
     processOnSpy.mockRestore()
     shutdown()
+  })
+
+  it('OpinionatedInstrumentation renameSpanOnEnd hook fires through the pipeline', async () => {
+    const exporter = createExporter()
+    const onEndSpy = vi.fn()
+
+    const collectingProcessor: SpanProcessor = {
+      onStart: vi.fn(),
+      onEnd: onEndSpy,
+      forceFlush: () => Promise.resolve(),
+      shutdown: () => Promise.resolve(),
+    }
+
+    // Create a fake instrumentation with a known scope name
+    const fakeInstrumentation = {
+      instrumentationName: 'test-fake-scope',
+      instrumentationVersion: '1.0.0',
+      setTracerProvider: vi.fn(),
+      setMeterProvider: vi.fn(),
+      getModuleDefinitions: () => [],
+      enable: vi.fn(),
+      disable: vi.fn(),
+      setConfig: vi.fn(),
+      getConfig: () => ({}),
+    }
+
+    const opinInst = new OpinionatedInstrumentation(fakeInstrumentation as any, {
+      renameSpanOnEnd: (span) => `renamed:${span.name}`,
+    })
+
+    const { sdk } = opinionatedTelemetryInit({
+      serviceName: 'test-service',
+      traceExporter: exporter,
+      instrumentations: [opinInst],
+      additionalSpanProcessors: [collectingProcessor],
+      dropSyncSpans: false,
+    })
+
+    // Create a span with the same scope name as the instrumentation
+    const tracer = trace.getTracer('test-fake-scope')
+    const span = tracer.startSpan('original-name')
+    span.end()
+
+    await sdk.shutdown()
+
+    expect(onEndSpy).toHaveBeenCalled()
+    const receivedSpan = onEndSpy.mock.calls[0][0] as ReadableSpan
+    expect(receivedSpan.name).toBe('renamed:original-name')
+  })
+
+  it('OpinionatedInstrumentation onEnd hook fires through the pipeline', async () => {
+    const exporter = createExporter()
+    const hookSpy = vi.fn()
+    const onEndSpy = vi.fn()
+
+    const collectingProcessor: SpanProcessor = {
+      onStart: vi.fn(),
+      onEnd: onEndSpy,
+      forceFlush: () => Promise.resolve(),
+      shutdown: () => Promise.resolve(),
+    }
+
+    const fakeInstrumentation = {
+      instrumentationName: 'test-onend-scope',
+      instrumentationVersion: '1.0.0',
+      setTracerProvider: vi.fn(),
+      setMeterProvider: vi.fn(),
+      getModuleDefinitions: () => [],
+      enable: vi.fn(),
+      disable: vi.fn(),
+      setConfig: vi.fn(),
+      getConfig: () => ({}),
+    }
+
+    const opinInst = new OpinionatedInstrumentation(fakeInstrumentation as any, {
+      onEnd: hookSpy,
+    })
+
+    const { sdk } = opinionatedTelemetryInit({
+      serviceName: 'test-service',
+      traceExporter: exporter,
+      instrumentations: [opinInst],
+      additionalSpanProcessors: [collectingProcessor],
+      dropSyncSpans: false,
+    })
+
+    const tracer = trace.getTracer('test-onend-scope')
+    const span = tracer.startSpan('hook-test')
+    span.end()
+
+    await sdk.shutdown()
+
+    expect(hookSpy).toHaveBeenCalledTimes(1)
+    const hookSpan = hookSpy.mock.calls[0][0] as ReadableSpan
+    expect(hookSpan.name).toBe('hook-test')
   })
 })
