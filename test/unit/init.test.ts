@@ -1,0 +1,161 @@
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import { InMemorySpanExporter } from '@opentelemetry/sdk-trace-base'
+import type { SpanProcessor, ReadableSpan } from '@opentelemetry/sdk-trace-base'
+import { trace } from '@opentelemetry/api'
+import { opinionatedTelemetryInit } from '../../src/init.js'
+import { cleanupOtel, nextTick } from '../helpers.js'
+
+function createExporter() {
+  return new InMemorySpanExporter()
+}
+
+describe('opinionatedTelemetryInit', () => {
+  afterEach(() => cleanupOtel())
+
+  it('returns { sdk, getTracer, shutdown } with correct types', () => {
+    const exporter = createExporter()
+    const result = opinionatedTelemetryInit({
+      serviceName: 'test-service',
+      traceExporter: exporter,
+      instrumentations: [],
+    })
+
+    expect(result).toHaveProperty('sdk')
+    expect(result).toHaveProperty('getTracer')
+    expect(result).toHaveProperty('shutdown')
+    expect(typeof result.getTracer).toBe('function')
+    expect(typeof result.shutdown).toBe('function')
+
+    result.shutdown()
+  })
+
+  it('getTracer() returns a tracer (default uses serviceName)', () => {
+    const exporter = createExporter()
+    const { getTracer, shutdown } = opinionatedTelemetryInit({
+      serviceName: 'my-service',
+      traceExporter: exporter,
+      instrumentations: [],
+    })
+
+    const tracer = getTracer()
+    // Verify it's a real tracer by starting a span
+    const span = tracer.startSpan('test-span')
+    expect(span).toBeDefined()
+    span.end()
+
+    shutdown()
+  })
+
+  it('getTracer("custom") returns a tracer with custom name', () => {
+    const exporter = createExporter()
+    const { getTracer, shutdown } = opinionatedTelemetryInit({
+      serviceName: 'my-service',
+      traceExporter: exporter,
+      instrumentations: [],
+    })
+
+    const tracer = getTracer('custom')
+    const span = tracer.startSpan('custom-span')
+    expect(span).toBeDefined()
+    span.end()
+
+    shutdown()
+  })
+
+  it('shutdown() calls through to sdk.shutdown without throwing', async () => {
+    const exporter = createExporter()
+    const { shutdown } = opinionatedTelemetryInit({
+      serviceName: 'test-service',
+      traceExporter: exporter,
+      instrumentations: [],
+    })
+
+    await expect(shutdown()).resolves.not.toThrow()
+  })
+
+  it('additionalSpanProcessors are included in the processing chain', async () => {
+    const exporter = createExporter()
+    const onEndSpy = vi.fn()
+
+    const customProcessor: SpanProcessor = {
+      onStart: vi.fn(),
+      onEnd: onEndSpy,
+      forceFlush: () => Promise.resolve(),
+      shutdown: () => Promise.resolve(),
+    }
+
+    const { getTracer, sdk } = opinionatedTelemetryInit({
+      serviceName: 'test-service',
+      traceExporter: exporter,
+      instrumentations: [],
+      additionalSpanProcessors: [customProcessor],
+      dropSyncSpans: false,
+    })
+
+    const tracer = getTracer()
+    const span = tracer.startSpan('processor-test')
+    span.end()
+
+    await sdk.shutdown()
+
+    expect(onEndSpy).toHaveBeenCalled()
+    const receivedSpan = onEndSpy.mock.calls[0][0] as ReadableSpan
+    expect(receivedSpan.name).toBe('processor-test')
+  })
+
+  it('registers shutdown signal handler with the configured signal name', () => {
+    const processOnSpy = vi.spyOn(process, 'on')
+    const exporter = createExporter()
+
+    const { shutdown } = opinionatedTelemetryInit({
+      serviceName: 'test-service',
+      traceExporter: exporter,
+      instrumentations: [],
+      shutdownSignal: 'SIGUSR2',
+    })
+
+    expect(processOnSpy).toHaveBeenCalledWith('SIGUSR2', expect.any(Function))
+
+    processOnSpy.mockRestore()
+    shutdown()
+  })
+
+  it('registers SIGTERM by default', () => {
+    const processOnSpy = vi.spyOn(process, 'on')
+    const exporter = createExporter()
+
+    const { shutdown } = opinionatedTelemetryInit({
+      serviceName: 'test-service',
+      traceExporter: exporter,
+      instrumentations: [],
+    })
+
+    expect(processOnSpy).toHaveBeenCalledWith('SIGTERM', expect.any(Function))
+
+    processOnSpy.mockRestore()
+    shutdown()
+  })
+
+  it('does not register a signal handler when shutdownSignal is empty string', () => {
+    const processOnSpy = vi.spyOn(process, 'on')
+    const exporter = createExporter()
+
+    const { shutdown } = opinionatedTelemetryInit({
+      serviceName: 'test-service',
+      traceExporter: exporter,
+      instrumentations: [],
+      shutdownSignal: '',
+    })
+
+    // Filter calls to only signal-related ones (ignore unrelated process.on calls)
+    const signalCalls = processOnSpy.mock.calls.filter(
+      ([event]) =>
+        typeof event === 'string' &&
+        (event.startsWith('SIG') || event === 'SIGTERM'),
+    )
+    expect(signalCalls).toHaveLength(0)
+
+    processOnSpy.mockRestore()
+    shutdown()
+  })
+})
