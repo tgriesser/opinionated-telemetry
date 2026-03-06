@@ -1,24 +1,33 @@
 # opinionated-telemetry
 
-Opinionated OpenTelemetry instrumentation patterns extracted from years of learnings from real-world o11y, meant for reuse across Node.js projects. The defaults included may or may not be right for you, be sure to read the options carefully.
+We've thought a lot about Telemetry in Node.js, so you don't have to
 
-Best suited for use with [Honeycomb](https://www.honeycomb.io/)
+"Opinionated" OpenTelemetry instrumentation patterns extracted from years of learnings from real-world o11y, extracted to help Node.js projects eveywhere. Sensible defaults, tools, and hooks to help you cut out the noise and cost from default "instrument everything" implementations, and help you really drill down and understand what's most important.
+
+The defaults included may or may not be right for you, so be sure to read the options carefully. Comes with powerful hooks for sampling spans, dropping spans, reparenting, globally "auto-instrumenting" important bits of your own code, as well as some nice helpers for some libraries I've used in the past.
+
+Contributions & feedback are welcome, especially if you have other libraries you have "opinionated" defaults for.
+
+Best suited for & meant use with [Honeycomb.io](https://www.honeycomb.io/). Virtually unlimited attributes on a span for no additional cost is such a powerful concept, I can't believe I don't hear it's praises more often.
+
 
 ## Features
 
-- **Stuck span detection** -- detects in-flight spans exceeding a threshold and exports diagnostic snapshots
-- **Sync span dropping** -- automatically drops spans that start and end in the same tick
-- **Span reparenting** -- drops intermediate spans (e.g. knex, graphql) and merges their attributes into child spans
-- **Baggage propagation** -- propagates baggage entries as span attributes on all child spans
-- **Memory delta tracking** -- captures RSS (or detailed heap) memory deltas on root spans
-- **Event loop utilization** -- captures event loop utilization (0-1) on all spans
-- **Auto-instrumentation** -- wraps exported async functions with spans via `ESM` or `Module._load` patching
-- **Integration helpers** -- knex, graphql, bull, socket.io, express
+- **Stuck span detection**: detects in-flight spans exceeding a threshold and exports early "diagnostic" span snapshots, so you can understand what might be broken sooner (long queries, hung requests, etc.)
+- **Sync span dropping**: automatically drops "synchronous" spans that are start and end in the same tick by default, configurable to allow for keeping specific spans e.g. keeping sync spans > `100ms`, or spans with a certain name, etc.
+- **Span reparenting**: allows us to drop intermediate spans (e.g. knex, graphql) and merge their attributes into child spans as baggage. No use having both a `knex` span that has a single nested `pg` or `mysql` span underneath, unless there is an error in the `knex` span or something
+- **Baggage propagation**: propagates baggage entries as span attributes on all child spans by default
+- **Memory & Memory delta tracking**: captures RSS (or detailed heap, configurable) memory & memory deltas on root spans.
+- **Auto-instrumentation**: [opt-in hooks](#auto-instrumentation) wraps exported async functions from your own codebase with auto-spans based on the function or method name, configured via `ESM` or `Module._load` patching
+- **Head & Tail Based Sampling**: Includes sensible approaches to dealing with Head & Tail based sampling out of the box
+- **Burst Protection**: Along with the sampling, includes some conventions for preventing a simple coding mistake that generates an infinite loop spawning thousands of spans per second from doing too much damage.
+- **Integration helpers**: knex, graphql, bull, socket.io, express
+- **Event loop utilization**: captures event loop utilization (0-1) on all spans. Useful for alerting on situation where expensive spans are blocking the event loop. Particularly useful when dealing with things that are synchronous, like `fs` calls or `better-sqlite3` queries
 
 ## Install
 
 ```
-npm install @tgriesser/opinionated-telemetry
+npm install opinionated-telemetry
 ```
 
 ## Quick start
@@ -35,8 +44,10 @@ import { KnexInstrumentation } from '@opentelemetry/instrumentation-knex'
 const { sdk, getTracer, shutdown } = opinionatedTelemetryInit({
   serviceName: 'my-service',
   traceExporter: new OTLPTraceExporter({
-    url: 'https://api.honeycomb.io:443/v1/traces',
+    url: 'https://api.honeycomb.io:443/v1/traces', // or wheverever you want these to go. We recommend Honeycomb
+    headers: '...your headers...',
   }),
+  // Takes all of the normal, or wrap them as an "OpinionatedInstrumentation" for even more options
   instrumentations: [
     new HttpInstrumentation(),
     new OpinionatedInstrumentation(
@@ -65,7 +76,8 @@ opinionatedTelemetryInit({
   dropSyncSpans?: true | ((span) => boolean),        // default: true
   enableReparenting?: boolean,                       // default: true
   baggageToAttributes?: boolean,                     // default: true
-  memoryDelta?: boolean | MemoryDeltaConfig,         // default: true (rss only)
+  memory?: boolean | MemoryConfig,              // default: true (rss only)
+  memoryDelta?: boolean | MemoryConfig,              // default: true (rss only)
   eventLoopUtilization?: boolean | 'root',           // default: true (all spans)
   stuckSpanDetection?: boolean | StuckSpanConfig,    // default: true
   onSpanAfterShutdown?: (span) => void,              // default: debug log
@@ -77,9 +89,17 @@ opinionatedTelemetryInit({
 
 Returns `{ sdk, getTracer, shutdown }`.
 
+#### `memory`
+
+Captures memory usage root spans under `opin_tel.memory.*` attribute.
+
+Set to `true` (default) for RSS-only via the fast `process.memoryUsage.rss()` path, or pass a `MemoryConfig` object to pick specific fields (`rss`, `heapTotal`, `heapUsed`, `external`, `arrayBuffers`) which uses the full `process.memoryUsage()` call. Set to `false` to disable.
+
 #### `memoryDelta`
 
-Captures memory usage deltas on root spans. Set to `true` (default) for RSS-only via the fast `process.memoryUsage.rss()` path, or pass a `MemoryDeltaConfig` object to pick specific fields (`rss`, `heapTotal`, `heapUsed`, `external`, `arrayBuffers`) which uses the full `process.memoryUsage()` call. Set to `false` to disable.
+Captures memory usage deltas on root spans under `opin_tel.memory_delta.*` attribute.
+
+Set to `true` (default) for RSS-only via the fast `process.memoryUsage.rss()` path, or pass a `MemoryConfig` object to pick specific fields (`rss`, `heapTotal`, `heapUsed`, `external`, `arrayBuffers`) which uses the full `process.memoryUsage()` call. Set to `false` to disable.
 
 #### `eventLoopUtilization`
 
@@ -152,6 +172,57 @@ createAutoInstrumentHook({
   ],
 })
 ```
+
+## Sampling
+
+opinionated-telemetry includes built-in sampling with three composable modes: head-based, tail-based, and EMA burst protection. See [SAMPLING.md](./SAMPLING.md) for detailed documentation on the philosophy, algorithms, composition, and design decisions.
+
+```ts
+opinionatedTelemetryInit({
+  serviceName: 'my-service',
+  traceExporter: new OTLPTraceExporter(),
+  instrumentations: [new HttpInstrumentation()],
+  sampling: {
+    // Head-based: lightweight, immediate drop/keep at trace start
+    head: {
+      sample: (attrs, spanName) => {
+        if (spanName.startsWith('health-check')) return 100 // keep 1-in-100
+        return 1 // keep all
+      },
+      mustKeepSpan: (span) => span.status.code === SpanStatusCode.ERROR,
+    },
+
+    // Tail-based: buffer all spans, decide with full trace context
+    tail: {
+      sample: (rootAttrs, trace) => {
+        if (trace.hasError) return 1 // keep all errors
+        if (trace.durationMs > 5000) return 1 // keep slow traces
+        return 10 // sample 1-in-10 otherwise
+      },
+      mustKeepSpan: (span) => span.status.code === SpanStatusCode.ERROR,
+      maxTraces: 1000, // max buffered traces (default: 1000)
+      maxAgeMs: 120_000, // max buffer age (default: 120s)
+      maxSpansPerTrace: 500, // flush large traces early (default: 500)
+    },
+
+    // Burst protection: EMA-based per-key throttling
+    burstProtection: {
+      keyFn: (span) => span.name, // grouping key (default: span.name)
+      halfLifeMs: 10_000, // EMA responsiveness (default: 10s)
+      rateThreshold: 100, // spans/sec before throttling (default: 100)
+      maxSampleRate: 100, // max sample rate cap (default: 100)
+    },
+  },
+})
+```
+
+**Head-based** sampling calls `sample` once per root span and returns a 1-in-N rate. Spans are dropped immediately if sampled out. `mustKeepSpan` can rescue individual important spans (e.g. errors) by reparenting them to the root with `SampleRate=1`.
+
+**Tail-based** sampling buffers all spans until the root ends, then calls `sample` with a `TraceSummary` containing error counts, duration, and span count. `mustKeepSpan` flags a trace for guaranteed keeping without short-circuiting the buffer. Safety valves (`maxTraces`, `maxAgeMs`, `maxSpansPerTrace`) prevent unbounded memory growth.
+
+**Burst protection** uses an exponential moving average to detect per-key span rate spikes and automatically applies a sample rate when throughput exceeds the threshold. No manual rate configuration needed.
+
+When combined, rates compose multiplicatively. Tail overrides head for the base decision. `mustKeepSpan` always clamps the rate to 1. Kept spans receive a `SampleRate=N` attribute following the Honeycomb convention.
 
 ## Integration Helpers
 

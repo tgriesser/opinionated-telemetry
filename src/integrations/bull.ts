@@ -96,10 +96,7 @@ export function otelInitBull(Bull: any, config?: BullOtelConfig): void {
     return originalProcess.apply(this, args)
   }
 
-  Bull.prototype.add = function patchedAdd(
-    this: any,
-    ...args: any[]
-  ) {
+  Bull.prototype.add = function patchedAdd(this: any, ...args: any[]) {
     const currentSpan = trace.getActiveSpan()
     const link = currentSpan
       ? {

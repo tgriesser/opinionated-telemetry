@@ -4,7 +4,7 @@ export { OpinionatedInstrumentation } from './opinionated-instrumentation.js'
 export { FilteringSpanProcessor } from './filtering-span-processor.js'
 export type {
   FilteringSpanProcessorConfig,
-  MemoryDeltaConfig,
+  MemoryConfig,
   StuckSpanConfig,
 } from './filtering-span-processor.js'
 
@@ -33,4 +33,9 @@ export type {
   IgnoreRuleEntry,
   AutoInstrumentPath,
   AutoInstrumentHookConfig,
+  SamplingConfig,
+  HeadSamplingConfig,
+  TailSamplingConfig,
+  BurstProtectionConfig,
+  TraceSummary,
 } from './types.js'

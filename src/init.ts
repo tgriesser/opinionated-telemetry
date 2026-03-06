@@ -27,16 +27,10 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     traceExporter,
     metricReader,
     spanLimits = DEFAULT_SPAN_LIMITS,
-    dropSyncSpans = true,
-    enableReparenting = true,
-    baggageToAttributes = true,
-    memoryDelta,
-    eventLoopUtilization,
-    onSpanAfterShutdown,
-    stuckSpanDetection,
     shutdownSignal = 'SIGTERM',
     instrumentations,
     additionalSpanProcessors = [],
+    ...processorConfig
   } = config
 
   debug('initializing service=%s', serviceName)
@@ -55,15 +49,10 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
   })
 
   const batchProcessor = new BatchSpanProcessor(traceExporter)
-  const filteringProcessor = new FilteringSpanProcessor(batchProcessor, {
-    dropSyncSpans,
-    enableReparenting,
-    baggageToAttributes,
-    memoryDelta,
-    eventLoopUtilization,
-    onSpanAfterShutdown,
-    stuckSpanDetection,
-  })
+  const filteringProcessor = new FilteringSpanProcessor(
+    batchProcessor,
+    processorConfig,
+  )
   const spanProcessors = [...additionalSpanProcessors, filteringProcessor]
 
   const sdk = new NodeSDK({
@@ -80,9 +69,9 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
   sdk.start()
   debug(
     'sdk started (dropSyncSpans=%s, reparenting=%s, baggageToAttributes=%s)',
-    !!dropSyncSpans,
-    enableReparenting,
-    baggageToAttributes,
+    !!(processorConfig.dropSyncSpans ?? true),
+    processorConfig.enableReparenting ?? true,
+    processorConfig.baggageToAttributes ?? true,
   )
 
   const shutdown = () =>

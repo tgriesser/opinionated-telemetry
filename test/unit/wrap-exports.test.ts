@@ -176,12 +176,7 @@ describe('wrapFunction sync return', () => {
 
   it('uses "anonymous" for unnamed functions', () => {
     const { tracer } = createSimpleProvider()
-    const wrapped = wrapFunction(
-      async () => 'hi',
-      'test',
-      'file',
-      tracer,
-    )
+    const wrapped = wrapFunction(async () => 'hi', 'test', 'file', tracer)
     // Arrow functions have empty name, should fall back to 'anonymous'
     expect(wrapped.name).toBe('anonymous')
   })

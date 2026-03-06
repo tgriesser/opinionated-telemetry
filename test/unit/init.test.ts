@@ -184,9 +184,12 @@ describe('opinionatedTelemetryInit', () => {
       getConfig: () => ({}),
     }
 
-    const opinInst = new OpinionatedInstrumentation(fakeInstrumentation as any, {
-      renameSpanOnEnd: (span) => `renamed:${span.name}`,
-    })
+    const opinInst = new OpinionatedInstrumentation(
+      fakeInstrumentation as any,
+      {
+        renameSpanOnEnd: (span) => `renamed:${span.name}`,
+      },
+    )
 
     const { sdk } = opinionatedTelemetryInit({
       serviceName: 'test-service',
@@ -232,9 +235,12 @@ describe('opinionatedTelemetryInit', () => {
       getConfig: () => ({}),
     }
 
-    const opinInst = new OpinionatedInstrumentation(fakeInstrumentation as any, {
-      onEnd: hookSpy,
-    })
+    const opinInst = new OpinionatedInstrumentation(
+      fakeInstrumentation as any,
+      {
+        onEnd: hookSpy,
+      },
+    )
 
     const { sdk } = opinionatedTelemetryInit({
       serviceName: 'test-service',

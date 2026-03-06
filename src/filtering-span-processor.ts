@@ -4,36 +4,35 @@ import type {
   SpanProcessor,
 } from '@opentelemetry/sdk-trace-base'
 import type { Context } from '@opentelemetry/api'
-import { ROOT_CONTEXT, propagation } from '@opentelemetry/api'
+import { ROOT_CONTEXT, propagation, SpanStatusCode } from '@opentelemetry/api'
 import { performance } from 'node:perf_hooks'
+import { crc32 } from 'node:zlib'
 import debugLib from 'debug'
 import { OpinionatedInstrumentation } from './opinionated-instrumentation.js'
+import type { SamplingConfig } from './types.js'
 // Private import — used for instanceof checks and constructing snapshot spans.
 // Pinned to @opentelemetry/sdk-trace-base v2.x. If the SDK restructures its
 // build output, this import will fail at startup (not silently).
 import { SpanImpl } from '@opentelemetry/sdk-trace-base/build/src/Span.js'
+import { OPIN_TEL_INTERNAL } from './constants.js'
 
 const debug = debugLib('opin_tel:filtering-processor')
 const TICK_KEY = '__tick'
 const MEMORY_KEY = '__memStart'
 const ELU_KEY = '__eluStart'
 
-function camelToSnake(s: string): string {
-  return s.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)
-}
+export type MemoryKey = keyof NodeJS.MemoryUsage
 
-export type MemoryDeltaKey = keyof NodeJS.MemoryUsage
-
-export interface MemoryDeltaConfig {
-  /** Capture rss delta */
+export interface MemoryConfig {
+  /** Capture rss */
   rss?: boolean
-  /** Capture heapTotal delta */
+  /** Capture heapTotal */
   heapTotal?: boolean
-  /** Capture heapUsed delta */
+  /** Capture heapUsed */
   heapUsed?: boolean
-  /** Capture external delta */
+  /** Capture external */
   external?: boolean
-  /** Capture arrayBuffers delta */
+  /** Capture arrayBuffers */
   arrayBuffers?: boolean
 }
 
@@ -54,13 +53,21 @@ export interface FilteringSpanProcessorConfig {
   /** Propagate baggage entries as span attributes in onStart. Default: true */
   baggageToAttributes?: boolean
   /**
+   * Capture memory usage on root spans
+   * - `true` (default): capture rss delta only via the fast `process.memoryUsage.rss()` path
+   * - `MemoryConfig`: pick specific fields (rss, heapTotal, heapUsed, external, arrayBuffers)
+   * — uses `process.memoryUsage()` which includes V8 heap stats
+   * - `false`: disable
+   */
+  memory?: boolean | MemoryConfig
+  /**
    * Capture memory usage deltas on root spans.
    * - `true` (default): capture rss delta only via the fast `process.memoryUsage.rss()` path
-   * - `MemoryDeltaConfig`: pick specific fields (rss, heapTotal, heapUsed, external, arrayBuffers)
+   * - `MemoryConfig`: pick specific fields (rss, heapTotal, heapUsed, external, arrayBuffers)
    *   — uses `process.memoryUsage()` which includes V8 heap stats
    * - `false`: disable
    */
-  memoryDelta?: boolean | MemoryDeltaConfig
+  memoryDelta?: boolean | MemoryConfig
   /**
    * Capture event loop utilization on spans.
    * - `true` (default): capture on all spans
@@ -72,6 +79,30 @@ export interface FilteringSpanProcessorConfig {
   onSpanAfterShutdown?: (span: Span & ReadableSpan) => void
   /** Enable stuck span detection. Default: true */
   stuckSpanDetection?: boolean | StuckSpanConfig
+  /** Sampling configuration for head, tail, and burst protection. */
+  sampling?: SamplingConfig
+}
+
+interface TailBufferEntry {
+  spans: ReadableSpan[]
+  rootSpan: ReadableSpan | null
+  headSampleRate: number
+  createdAt: number
+  errorCount: number
+  hasError: boolean
+  mustKeep: boolean
+  flushed: boolean
+  decidedRate: number
+}
+
+interface EmaState {
+  rate: number
+  lastEventMs: number
+}
+
+function shouldKeep(traceId: string, rate: number): boolean {
+  if (rate <= 1) return true
+  return (crc32(traceId) >>> 0) % rate === 0
 }
 
 export class FilteringSpanProcessor implements SpanProcessor {
@@ -83,14 +114,24 @@ export class FilteringSpanProcessor implements SpanProcessor {
   private _didShutdown = false
   private _nextTickScheduled = false
   private _currentTick = 0
+  private _memoryUse = false
   /** When true, use fast process.memoryUsage.rss() path (rss only) */
   private _memoryFastPath = false
-  /** When set, use full process.memoryUsage() and capture these keys/attribute names */
-  private _memoryKeys: [MemoryDeltaKey, string][] = []
+  // private _memoryCapture = false
+  private _memoryCaptureKeys: MemoryKey[] = []
+  // private _memoryDeltaCapture = false
+  private _memoryDeltaKeys: MemoryKey[] = []
   private _eventLoopUtilization: boolean | 'root' = false
   private _stuckSpanInterval: ReturnType<typeof setInterval> | null = null
   private _reportedStuckSpans = new Set<string>()
   private _stuckSpanConfig: StuckSpanConfig | null = null
+  private _sampling: SamplingConfig | null = null
+  private _headDecisions = new Map<string, number>()
+  private _rescuedTraces = new Set<string>()
+  private _tailBuffer = new Map<string, TailBufferEntry>()
+  private _burstEma = new Map<string, EmaState>()
+  private _samplingEvictionInterval: ReturnType<typeof setInterval> | null =
+    null
 
   constructor(wrapped: SpanProcessor, config?: FilteringSpanProcessorConfig) {
     this._wrapped = wrapped
@@ -98,19 +139,38 @@ export class FilteringSpanProcessor implements SpanProcessor {
       dropSyncSpans: config?.dropSyncSpans ?? true,
       enableReparenting: config?.enableReparenting ?? true,
       baggageToAttributes: config?.baggageToAttributes ?? true,
+      memory: config?.memory ?? true,
       memoryDelta: config?.memoryDelta ?? true,
       eventLoopUtilization: config?.eventLoopUtilization ?? true,
       onSpanAfterShutdown: config?.onSpanAfterShutdown,
       stuckSpanDetection: config?.stuckSpanDetection ?? true,
     }
-    const md = this._config.memoryDelta
-    if (md === true) {
-      this._memoryFastPath = true
-    } else if (md && typeof md === 'object') {
-      this._memoryKeys = (Object.keys(md) as MemoryDeltaKey[])
-        .filter((k) => md[k])
-        .map((k) => [k, `opin_tel.memory_delta.${camelToSnake(k)}`])
+    const captureMemory = Boolean(
+      this._config.memory || this._config.memoryDelta,
+    )
+    if (captureMemory) {
+      this._memoryUse = true
+      const mem = this._config.memory
+      if (mem === true) {
+        this._memoryCaptureKeys = ['rss']
+      } else if (mem && typeof mem === 'object') {
+        this._memoryCaptureKeys = (Object.keys(mem) as MemoryKey[]).filter(
+          (k) => mem[k],
+        )
+      }
+      const md = this._config.memoryDelta
+      if (md === true) {
+        this._memoryDeltaKeys = ['rss']
+      } else if (md && typeof md === 'object') {
+        this._memoryDeltaKeys = (Object.keys(md) as MemoryKey[]).filter(
+          (k) => md[k],
+        )
+      }
+      this._memoryFastPath =
+        this._memoryDeltaKeys.length === 1 &&
+        this._memoryCaptureKeys.length === 1
     }
+
     this._eventLoopUtilization = this._config.eventLoopUtilization ?? true
     if (this._config.stuckSpanDetection) {
       const ssd = this._config.stuckSpanDetection
@@ -121,6 +181,16 @@ export class FilteringSpanProcessor implements SpanProcessor {
         intervalMs,
       )
       this._stuckSpanInterval.unref()
+    }
+    if (config?.sampling) {
+      this._sampling = config.sampling
+      if (this._sampling.tail || this._sampling.burstProtection) {
+        this._samplingEvictionInterval = setInterval(
+          () => this._evictSamplingState(),
+          5_000,
+        )
+        this._samplingEvictionInterval.unref()
+      }
     }
   }
 
@@ -153,14 +223,34 @@ export class FilteringSpanProcessor implements SpanProcessor {
       const spanCtx = span.spanContext()
       if (!this._rootSpans.has(spanCtx.traceId)) {
         this._rootSpans.set(spanCtx.traceId, span)
-        if (this._memoryFastPath) {
-          Object.defineProperty(span, MEMORY_KEY, {
-            value: process.memoryUsage.rss(),
+        if (this._memoryUse) {
+          this._captureMemoryOnSpan(span)
+        }
+
+        // Head sampling decision
+        if (this._sampling?.head) {
+          const headRate = this._sampling.head.sample(
+            span.attributes,
+            span.name,
+          )
+          this._headDecisions.set(spanCtx.traceId, headRate)
+        }
+
+        // Tail buffer initialization
+        if (this._sampling?.tail) {
+          const headRate = this._headDecisions.get(spanCtx.traceId) ?? 1
+          this._tailBuffer.set(spanCtx.traceId, {
+            spans: [],
+            rootSpan: null,
+            headSampleRate: headRate,
+            createdAt: Date.now(),
+            errorCount: 0,
+            hasError: false,
+            mustKeep: false,
+            flushed: false,
+            decidedRate: 1,
           })
-        } else if (this._memoryKeys.length > 0) {
-          Object.defineProperty(span, MEMORY_KEY, {
-            value: process.memoryUsage(),
-          })
+          this._evictOldestTailEntry()
         }
       } else {
         debug(
@@ -248,6 +338,18 @@ export class FilteringSpanProcessor implements SpanProcessor {
       return
     }
 
+    // Stuck span snapshots bypass sampling entirely
+    if (span.attributes[OPIN_TEL_INTERNAL.stuck.isSnapshot]) {
+      this._wrapped.onEnd(span)
+      return
+    }
+
+    // Sampling
+    if (this._sampling) {
+      this._applySampling(span as Span & ReadableSpan, isSpanImpl)
+      return
+    }
+
     this._wrapped.onEnd(span)
   }
 
@@ -257,6 +359,43 @@ export class FilteringSpanProcessor implements SpanProcessor {
     if (this._stuckSpanInterval) {
       clearInterval(this._stuckSpanInterval)
       this._stuckSpanInterval = null
+    }
+    if (this._samplingEvictionInterval) {
+      clearInterval(this._samplingEvictionInterval)
+      this._samplingEvictionInterval = null
+    }
+    // Flush remaining tail buffer entries
+    for (const [traceId, entry] of this._tailBuffer) {
+      if (!entry.flushed) {
+        // If root ended (rootSpan set), evaluate tail; otherwise use head rate
+        if (entry.rootSpan && this._sampling?.tail) {
+          const durationMs = this._spanDurationMs(entry.rootSpan)
+          const tailRate = this._sampling.tail.sample(
+            entry.rootSpan.attributes,
+            {
+              spans: entry.spans,
+              errorCount: entry.errorCount,
+              hasError: entry.hasError,
+              durationMs,
+              rootSpan: entry.rootSpan,
+              spanCount: entry.spans.length,
+            },
+          )
+          entry.decidedRate = entry.mustKeep ? 1 : tailRate
+        } else {
+          entry.decidedRate = entry.mustKeep ? 1 : entry.headSampleRate
+        }
+        entry.flushed = true
+        this._flushTailEntry(traceId, entry)
+      }
+    }
+    const hadBuffered = this._tailBuffer.size > 0
+    this._tailBuffer.clear()
+    this._headDecisions.clear()
+    this._rescuedTraces.clear()
+    this._burstEma.clear()
+    if (hadBuffered) {
+      return this._wrapped.forceFlush().then(() => this._wrapped.shutdown())
     }
     return this._wrapped.shutdown()
   }
@@ -303,8 +442,8 @@ export class FilteringSpanProcessor implements SpanProcessor {
         startTime: readable.startTime,
         attributes: {
           ...readable.attributes,
-          'opin_tel.stuck.duration_ms': Math.round(durationMs),
-          'opin_tel.stuck.is_snapshot': true,
+          [OPIN_TEL_INTERNAL.stuck.durationMs]: Math.round(durationMs),
+          [OPIN_TEL_INTERNAL.stuck.isSnapshot]: true,
         },
         spanLimits: (span as any)._spanLimits,
         spanProcessor: this._wrapped,
@@ -345,22 +484,8 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
     // Memory delta for root spans
     if (!span.parentSpanContext) {
-      const startMem = (span as any)[MEMORY_KEY]
-      if (startMem != null) {
-        if (this._memoryFastPath) {
-          span.setAttribute(
-            'opin_tel.memory_delta.rss',
-            process.memoryUsage.rss() - (startMem as number),
-          )
-        } else {
-          const endMem = process.memoryUsage()
-          for (const [key, attr] of this._memoryKeys) {
-            span.setAttribute(
-              attr,
-              endMem[key] - (startMem as NodeJS.MemoryUsage)[key],
-            )
-          }
-        }
+      if (this._memoryUse && this._memoryDeltaKeys.length > 0) {
+        this.captureMemoryDelta(span)
       }
     }
 
@@ -368,12 +493,15 @@ export class FilteringSpanProcessor implements SpanProcessor {
     const startElu = (span as any)[ELU_KEY]
     if (startElu != null) {
       const delta = performance.eventLoopUtilization(startElu)
-      span.setAttribute('opin_tel.event_loop.utilization', delta.utilization)
+      span.setAttribute(
+        OPIN_TEL_INTERNAL.eventLoop.utilization,
+        delta.utilization,
+      )
     }
 
     // Reparenting attribute inheritance
     if (!span.parentSpanContext) {
-      if (!span.attributes['opin_tel.stuck.is_snapshot']) {
+      if (!span.attributes[OPIN_TEL_INTERNAL.stuck.isSnapshot]) {
         this._rootSpans.delete(span.spanContext().traceId)
       }
     } else if (this._config.enableReparenting) {
@@ -401,9 +529,302 @@ export class FilteringSpanProcessor implements SpanProcessor {
         }
         // Snapshots keep their original parent so we can see which intermediate
         // span the stuck span is waiting under — the real span gets reparented when it ends.
-        if (!span.attributes['opin_tel.stuck.is_snapshot']) {
+        if (!span.attributes[OPIN_TEL_INTERNAL.stuck.isSnapshot]) {
           // @ts-expect-error - readonly attribute, but we know what we're doing
           span['parentSpanContext'] = reparentSpan.parentSpanContext
+        }
+      }
+    }
+  }
+
+  private _applySampling(span: Span & ReadableSpan, isSpanImpl: boolean): void {
+    const traceId = span.spanContext().traceId
+    const isRoot = !span.parentSpanContext
+    const burstRate = this._computeBurstRate(span)
+
+    // TAIL MODE
+    const tailEntry = this._tailBuffer.get(traceId)
+    if (tailEntry) {
+      if (tailEntry.flushed) {
+        // Decision already made — apply same rate to late child span
+        const finalRate = tailEntry.decidedRate * burstRate
+        if (finalRate > 1) {
+          if (!shouldKeep(traceId, finalRate)) {
+            debug(
+              'sampling: dropping late tail span %s (rate=%d)',
+              span.name,
+              finalRate,
+            )
+            return
+          }
+          this._setSpanAttr(span, isSpanImpl, 'SampleRate', finalRate)
+        }
+        this._wrapped.onEnd(span)
+        return
+      }
+
+      // Track errors
+      if (span.status.code === SpanStatusCode.ERROR) {
+        tailEntry.errorCount++
+        tailEntry.hasError = true
+      }
+
+      // Buffer the span
+      tailEntry.spans.push(span)
+
+      // mustKeepSpan: sets flag but does NOT flush
+      if (
+        this._sampling!.tail!.mustKeepSpan &&
+        this._sampling!.tail!.mustKeepSpan(span)
+      ) {
+        tailEntry.mustKeep = true
+      }
+
+      // Max spans overflow: flush with rate=1 (trace is "interesting")
+      const maxSpans = this._sampling!.tail!.maxSpansPerTrace ?? 500
+      if (tailEntry.spans.length >= maxSpans) {
+        tailEntry.decidedRate = 1
+        tailEntry.flushed = true
+        this._flushTailEntry(traceId, tailEntry, burstRate)
+        return
+      }
+
+      if (isRoot) {
+        // Root ended — evaluate tail.sample
+        tailEntry.rootSpan = span
+        const durationMs = this._spanDurationMs(span)
+        const tailRate = this._sampling!.tail!.sample(span.attributes, {
+          spans: tailEntry.spans,
+          errorCount: tailEntry.errorCount,
+          hasError: tailEntry.hasError,
+          durationMs,
+          rootSpan: span,
+          spanCount: tailEntry.spans.length,
+        })
+        tailEntry.decidedRate = tailEntry.mustKeep ? 1 : tailRate
+        tailEntry.flushed = true
+        this._flushTailEntry(traceId, tailEntry, burstRate)
+        // Clean up head decision
+        this._headDecisions.delete(traceId)
+        return
+      }
+
+      // Not root, not flushed — just buffer
+      return
+    }
+
+    // HEAD-ONLY MODE
+    if (this._headDecisions.has(traceId)) {
+      const headRate = this._headDecisions.get(traceId)!
+      const finalRate = headRate * burstRate
+
+      // Root of a rescued trace — always export regardless of sample decision
+      if (isRoot && this._rescuedTraces.has(traceId)) {
+        this._setSpanAttr(span, isSpanImpl, 'SampleRate', 1)
+        this._setSpanAttr(
+          span,
+          isSpanImpl,
+          OPIN_TEL_INTERNAL.meta.incompleteTrace,
+          true,
+        )
+        this._rescuedTraces.delete(traceId)
+        this._headDecisions.delete(traceId)
+        this._wrapped.onEnd(span)
+        return
+      }
+
+      // Trace is sampled out — check mustKeepSpan for rescue
+      if (finalRate > 1 && !shouldKeep(traceId, finalRate)) {
+        if (
+          this._sampling!.head?.mustKeepSpan &&
+          this._sampling!.head.mustKeepSpan(span)
+        ) {
+          // RESCUE: keep this span + guarantee root export
+          this._rescuedTraces.add(traceId)
+          // Reparent to root (skip intermediate dropped spans)
+          const rootSpan = this._rootSpans.get(traceId)
+          if (rootSpan && span.parentSpanContext) {
+            // @ts-expect-error — readonly, but we need to reparent
+            span['parentSpanContext'] = rootSpan.spanContext()
+          }
+          this._setSpanAttr(span, isSpanImpl, 'SampleRate', 1)
+          this._setSpanAttr(
+            span,
+            isSpanImpl,
+            OPIN_TEL_INTERNAL.meta.incompleteTrace,
+            true,
+          )
+          debug('sampling: rescued span %s in trace %s', span.name, traceId)
+          this._wrapped.onEnd(span)
+          return
+        }
+        // Drop this span
+        debug(
+          'sampling: dropping head-sampled span %s (rate=%d)',
+          span.name,
+          finalRate,
+        )
+        return
+      }
+
+      if (isRoot) {
+        this._headDecisions.delete(traceId)
+      }
+
+      if (finalRate > 1) {
+        this._setSpanAttr(span, isSpanImpl, 'SampleRate', finalRate)
+      }
+      this._wrapped.onEnd(span)
+      return
+    }
+
+    // BURST-ONLY MODE (no head, no tail)
+    if (burstRate > 1) {
+      if (!shouldKeep(traceId, burstRate)) {
+        debug(
+          'sampling: dropping burst span %s (rate=%d)',
+          span.name,
+          burstRate,
+        )
+        return
+      }
+      this._setSpanAttr(span, isSpanImpl, 'SampleRate', burstRate)
+    }
+    this._wrapped.onEnd(span)
+  }
+
+  private _computeBurstRate(span: ReadableSpan): number {
+    if (!this._sampling?.burstProtection) return 1
+    const bp = this._sampling.burstProtection
+    const key = bp.keyFn ? bp.keyFn(span) : span.name
+    const nowMs = Date.now()
+    const emaRate = this._updateEma(key, nowMs)
+    const threshold = bp.rateThreshold ?? 100
+    if (emaRate <= threshold) return 1
+    const rate = Math.ceil(emaRate / threshold)
+    return Math.min(rate, bp.maxSampleRate ?? 100)
+  }
+
+  private _updateEma(key: string, nowMs: number): number {
+    let state = this._burstEma.get(key)
+    if (!state) {
+      this._burstEma.set(key, { rate: 0, lastEventMs: nowMs })
+      return 0
+    }
+    const dtMs = nowMs - state.lastEventMs
+    if (dtMs <= 0) {
+      state.rate += 1
+      return state.rate
+    }
+    const halfLifeMs = this._sampling!.burstProtection!.halfLifeMs ?? 10_000
+    const alpha = 1 - Math.exp(-dtMs / halfLifeMs)
+    const instantRate = 1000 / dtMs
+    state.rate = alpha * instantRate + (1 - alpha) * state.rate
+    state.lastEventMs = nowMs
+    return state.rate
+  }
+
+  private _flushTailEntry(
+    traceId: string,
+    entry: TailBufferEntry,
+    burstRate = 1,
+  ): void {
+    const finalRate = entry.decidedRate * burstRate
+    if (finalRate > 1 && !shouldKeep(traceId, finalRate)) {
+      debug(
+        'sampling: dropping tail-buffered trace %s (%d spans, rate=%d)',
+        traceId,
+        entry.spans.length,
+        finalRate,
+      )
+      return
+    }
+    debug(
+      'sampling: flushing tail-buffered trace %s (%d spans, rate=%d)',
+      traceId,
+      entry.spans.length,
+      finalRate,
+    )
+    for (const buffered of entry.spans) {
+      if (finalRate > 1) {
+        // Reopen span to set attribute
+        const isImpl = buffered instanceof SpanImpl
+        this._setSpanAttr(
+          buffered as Span & ReadableSpan,
+          isImpl,
+          'SampleRate',
+          finalRate,
+        )
+      }
+      this._wrapped.onEnd(buffered)
+    }
+  }
+
+  private _setSpanAttr(
+    span: Span & ReadableSpan,
+    isSpanImpl: boolean,
+    key: string,
+    value: number | boolean,
+  ): void {
+    if (isSpanImpl) {
+      ;(span as SpanImpl)['_ended'] = false
+      span.setAttribute(key, value)
+      ;(span as SpanImpl)['_ended'] = true
+    } else {
+      span.setAttribute(key, value)
+    }
+  }
+
+  private _spanDurationMs(span: ReadableSpan): number {
+    const [startSec, startNano] = span.startTime
+    const [endSec, endNano] = span.endTime
+    return (endSec - startSec) * 1e3 + (endNano - startNano) / 1e6
+  }
+
+  private _evictOldestTailEntry(): void {
+    if (!this._sampling?.tail) return
+    const maxTraces = this._sampling.tail.maxTraces ?? 1000
+    while (this._tailBuffer.size > maxTraces) {
+      // Evict oldest by iteration order (Map preserves insertion order)
+      const oldest = this._tailBuffer.entries().next()
+      if (oldest.done) break
+      const [oldTraceId, oldEntry] = oldest.value
+      if (!oldEntry.flushed) {
+        oldEntry.decidedRate = oldEntry.mustKeep ? 1 : oldEntry.headSampleRate
+        oldEntry.flushed = true
+        this._flushTailEntry(oldTraceId, oldEntry)
+      }
+      this._tailBuffer.delete(oldTraceId)
+    }
+  }
+
+  private _evictSamplingState(): void {
+    const nowMs = Date.now()
+
+    // Evict stale tail buffer entries
+    if (this._sampling?.tail) {
+      const maxAgeMs = this._sampling.tail.maxAgeMs ?? 120_000
+      const graceMs = 30_000
+      for (const [traceId, entry] of this._tailBuffer) {
+        const age = nowMs - entry.createdAt
+        if (entry.flushed && age > graceMs) {
+          this._tailBuffer.delete(traceId)
+        } else if (!entry.flushed && age > maxAgeMs) {
+          // Timed out — flush with head rate
+          entry.decidedRate = entry.mustKeep ? 1 : entry.headSampleRate
+          entry.flushed = true
+          this._flushTailEntry(traceId, entry)
+        }
+      }
+    }
+
+    // Evict stale EMA entries
+    if (this._sampling?.burstProtection) {
+      const halfLifeMs = this._sampling.burstProtection.halfLifeMs ?? 10_000
+      const maxAge = 3 * halfLifeMs
+      for (const [key, state] of this._burstEma) {
+        if (nowMs - state.lastEventMs > maxAge) {
+          this._burstEma.delete(key)
         }
       }
     }
@@ -423,5 +844,51 @@ export class FilteringSpanProcessor implements SpanProcessor {
       this._nextTickScheduled = false
     })
     this._nextTickScheduled = true
+  }
+
+  private _captureMemoryOnSpan(span: Span & ReadableSpan) {
+    if (this._memoryFastPath) {
+      const rss = process.memoryUsage.rss()
+      if (this._memoryCaptureKeys.length) {
+        span.setAttribute(OPIN_TEL_INTERNAL.memory.rss, rss)
+      }
+      if (this._memoryDeltaKeys.length) {
+        Object.defineProperty(span, MEMORY_KEY, {
+          value: rss,
+        })
+      }
+    } else {
+      const memUsage = process.memoryUsage()
+      if (this._memoryCaptureKeys.length) {
+        for (const key of this._memoryCaptureKeys) {
+          span.setAttribute(OPIN_TEL_INTERNAL.memory[key], memUsage[key])
+        }
+        if (this._memoryDeltaKeys.length) {
+          Object.defineProperty(span, MEMORY_KEY, {
+            value: memUsage,
+          })
+        }
+      }
+    }
+  }
+
+  private captureMemoryDelta(span: Span & ReadableSpan) {
+    const startMem = (span as any)[MEMORY_KEY]
+    if (startMem != null) {
+      if (this._memoryFastPath) {
+        span.setAttribute(
+          OPIN_TEL_INTERNAL.memoryDelta.rss,
+          process.memoryUsage.rss() - (startMem as number),
+        )
+      } else {
+        const endMem = process.memoryUsage()
+        for (const key of this._memoryDeltaKeys) {
+          span.setAttribute(
+            OPIN_TEL_INTERNAL.memoryDelta[key],
+            endMem[key] - (startMem as NodeJS.MemoryUsage)[key],
+          )
+        }
+      }
+    }
   }
 }
