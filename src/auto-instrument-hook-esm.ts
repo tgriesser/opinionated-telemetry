@@ -27,7 +27,7 @@ export function createAutoInstrumentHookESM(
 
   debug('setting up ESM hook with %d matcher(s)', matchers.length)
   for (const m of matchers) {
-    debug('  watching: %s', m.prefix)
+    debug('  matching: %s', m.prefix)
   }
 
   // @ts-ignore - not defined during CJS build

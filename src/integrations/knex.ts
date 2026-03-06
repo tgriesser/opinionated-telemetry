@@ -61,12 +61,15 @@ export function sanitizeBinding(value: any): any {
     case 'string':
       return `string<${value.length}>`
     case 'bigint':
-      return `Bigint<${value.toString()}>`
-    case 'undefined':
     case 'symbol':
+      return `${typeof value}<<${value.toString()}>>`
+    case 'undefined':
     case 'function':
       return `<<${value}>>`
     case 'object': {
+      if (value === null) {
+        return null
+      }
       if (Array.isArray(value)) {
         return value.map(sanitizeBinding)
       }

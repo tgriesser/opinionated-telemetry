@@ -14,7 +14,7 @@ export function createAutoInstrumentHook(
 
   debug('patching Module._load with %d matcher(s)', matchers.length)
   for (const m of matchers) {
-    debug('  watching: %s', m.prefix)
+    debug('  matching: %s', m.prefix)
   }
   if (ignoreRules.length > 0) {
     debug('  ignore rules: %o', ignoreRules)
