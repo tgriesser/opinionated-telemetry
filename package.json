@@ -1,7 +1,7 @@
 {
-  "name": "@tgriesser/opinionated-telemetry",
+  "name": "opinionated-telemetry",
   "version": "0.1.0",
-  "description": "Opinionated OpenTelemetry instrumentation patterns: span reparenting, sync span dropping, baggage propagation, and library-specific helpers.",
+  "description": "Opinionated OpenTelemetry: stuck span detection, span dropping & reparenting, sampling, baggage propagation, and much more",
   "license": "MIT",
   "type": "module",
   "exports": {
