@@ -80,8 +80,8 @@ export interface StuckSpanConfig {
 export interface FilteringSpanProcessorConfig {
   /** Drop spans that start and end in the same tick. Default: true */
   dropSyncSpans?: boolean | ((span: Span & ReadableSpan) => boolean)
-  /** Enable reparenting for instrumentations with reparent: true. Default: true */
-  enableReparenting?: boolean
+  /** Enable collapse for instrumentations with collapse: true. Default: true */
+  enableCollapse?: boolean
   /** Propagate baggage entries as span attributes in onStart. Default: true */
   baggageToAttributes?: boolean
   /**
@@ -142,7 +142,7 @@ function shouldKeep(traceId: string, rate: number): boolean {
 export class FilteringSpanProcessor implements SpanProcessor {
   private _wrapped: SpanProcessor
   private _config: FilteringSpanProcessorConfig
-  private _reparentSpans = new Map<string, Span & ReadableSpan>()
+  private _collapseSpans = new Map<string, Span & ReadableSpan>()
   private _rootSpans = new Map<string, ReadableSpan>()
   private _allSpans = new Set<Span>()
   private _didShutdown = false
@@ -172,7 +172,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     this._wrapped = wrapped
     this._config = {
       dropSyncSpans: config?.dropSyncSpans ?? true,
-      enableReparenting: config?.enableReparenting ?? true,
+      enableCollapse: config?.enableCollapse ?? true,
       baggageToAttributes: config?.baggageToAttributes ?? true,
       memory: config?.memory ?? true,
       memoryDelta: config?.memoryDelta ?? true,
@@ -316,8 +316,8 @@ export class FilteringSpanProcessor implements SpanProcessor {
     if (scope) {
       const opts = OpinionatedInstrumentation.getOptions(scope)
       if (opts) {
-        if (opts.reparent) {
-          this._reparentSpans.set(span.spanContext().spanId, span)
+        if (opts.collapse) {
+          this._collapseSpans.set(span.spanContext().spanId, span)
         }
         if (opts.renameSpan) {
           const newName = opts.renameSpan(span.name, span)
@@ -408,13 +408,13 @@ export class FilteringSpanProcessor implements SpanProcessor {
       ;(span as SpanImpl)['_ended'] = true
     }
 
-    // Reparenting drop decision (not part of enrichment)
-    if (span.parentSpanContext && this._config.enableReparenting) {
-      // Drop spans that were marked for reparenting
-      const shouldDropSpan = this._reparentSpans.has(span.spanContext().spanId)
+    // Collapse drop decision (not part of enrichment)
+    if (span.parentSpanContext && this._config.enableCollapse) {
+      // Drop spans that were marked for collapse
+      const shouldDropSpan = this._collapseSpans.has(span.spanContext().spanId)
       if (shouldDropSpan) {
-        this._reparentSpans.delete(span.spanContext().spanId)
-        debug('dropping reparented span: %s', span.name)
+        this._collapseSpans.delete(span.spanContext().spanId)
+        debug('dropping collapsed span: %s', span.name)
         return
       }
     }
@@ -809,39 +809,39 @@ export class FilteringSpanProcessor implements SpanProcessor {
       )
     }
 
-    // Reparenting attribute inheritance
+    // Collapse: attribute inheritance and child reparenting
     if (!span.parentSpanContext) {
       if (!span.attributes[OPIN_TEL_INTERNAL.stuck.isSnapshot]) {
         this._rootSpans.delete(span.spanContext().traceId)
       }
-    } else if (this._config.enableReparenting) {
+    } else if (this._config.enableCollapse) {
       const parentSpanId = (span as any).parentSpanContext.spanId
-      let reparentSpan = this._reparentSpans.get(parentSpanId)
-      if (reparentSpan) {
+      let collapsedSpan = this._collapseSpans.get(parentSpanId)
+      if (collapsedSpan) {
         while (
-          reparentSpan.parentSpanContext?.spanId &&
-          this._reparentSpans.has(reparentSpan.parentSpanContext?.spanId)
+          collapsedSpan.parentSpanContext?.spanId &&
+          this._collapseSpans.has(collapsedSpan.parentSpanContext?.spanId)
         ) {
-          reparentSpan = this._reparentSpans.get(
-            reparentSpan.parentSpanContext.spanId,
+          collapsedSpan = this._collapseSpans.get(
+            collapsedSpan.parentSpanContext.spanId,
           )!
         }
         debug(
-          'reparenting span=%s from parent=%s to grandparent=%s',
+          'collapsing span=%s from parent=%s to grandparent=%s',
           span.name,
           parentSpanId,
-          reparentSpan.parentSpanContext?.spanId,
+          collapsedSpan.parentSpanContext?.spanId,
         )
-        for (const [key, val] of Object.entries(reparentSpan.attributes)) {
+        for (const [key, val] of Object.entries(collapsedSpan.attributes)) {
           if (!span.attributes[key] && val != null) {
             span.setAttribute(key, val)
           }
         }
         // Snapshots keep their original parent so we can see which intermediate
-        // span the stuck span is waiting under — the real span gets reparented when it ends.
+        // span the stuck span is waiting under — the real span gets collapsed when it ends.
         if (!span.attributes[OPIN_TEL_INTERNAL.stuck.isSnapshot]) {
           // @ts-expect-error - readonly attribute, but we know what we're doing
-          span['parentSpanContext'] = reparentSpan.parentSpanContext
+          span['parentSpanContext'] = collapsedSpan.parentSpanContext
         }
       }
     }
@@ -954,7 +954,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
           // Reparent to root (skip intermediate dropped spans)
           const rootSpan = this._rootSpans.get(traceId)
           if (rootSpan && span.parentSpanContext) {
-            // @ts-expect-error — readonly, but we need to reparent
+            // @ts-expect-error — readonly, but we need to reparent rescued span to root
             span['parentSpanContext'] = rootSpan.spanContext()
           }
           this._setSpanAttr(span, isSpanImpl, 'SampleRate', 1)

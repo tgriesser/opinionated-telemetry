@@ -108,8 +108,8 @@ export interface AggregateConfig {
 }
 
 export interface OpinionatedOptions {
-  /** Drop this span and reparent its children to its parent */
-  reparent?: boolean
+  /** Drop this span, merge its attributes into children, and reparent children to grandparent */
+  collapse?: boolean
   /** Collapse parallel sibling spans with the same name into a single aggregate span */
   aggregate?: boolean | AggregateConfig
   /** Rename span in onStart */

@@ -19,10 +19,10 @@ function createMockInstrumentation(name: string) {
 describe('OpinionatedInstrumentation', () => {
   it('wraps an instrumentation instance with options', () => {
     const inst = createMockInstrumentation('test-inst')
-    const wrapped = new OpinionatedInstrumentation(inst, { reparent: true })
+    const wrapped = new OpinionatedInstrumentation(inst, { collapse: true })
 
     expect(wrapped.instrumentation).toBe(inst)
-    expect(wrapped.options.reparent).toBe(true)
+    expect(wrapped.options.collapse).toBe(true)
   })
 
   it('defaults to empty options when none provided', () => {
@@ -33,7 +33,7 @@ describe('OpinionatedInstrumentation', () => {
   })
 
   it('registers options in the static registry', () => {
-    const opts = { reparent: true, onStart: () => {} }
+    const opts = { collapse: true, onStart: () => {} }
     const inst = createMockInstrumentation('test-registry')
     new OpinionatedInstrumentation(inst, opts)
 
@@ -48,7 +48,7 @@ describe('OpinionatedInstrumentation', () => {
 
   it('getAllOptions returns all registered entries', () => {
     const inst = createMockInstrumentation('test-all-opts')
-    new OpinionatedInstrumentation(inst, { reparent: true })
+    new OpinionatedInstrumentation(inst, { collapse: true })
 
     const all = OpinionatedInstrumentation.getAllOptions()
     expect(all.has('test-all-opts')).toBe(true)

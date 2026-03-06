@@ -38,9 +38,9 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
   const unwrappedInstrumentations = instrumentations.map((inst) => {
     if (inst instanceof OpinionatedInstrumentation) {
       debug(
-        'registered opinionated instrumentation: %s (reparent=%s)',
+        'registered opinionated instrumentation: %s (collapse=%s)',
         inst.instrumentation.instrumentationName,
-        !!inst.options.reparent,
+        !!inst.options.collapse,
       )
       return inst.instrumentation
     }
@@ -68,9 +68,9 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
 
   sdk.start()
   debug(
-    'sdk started (dropSyncSpans=%s, reparenting=%s, baggageToAttributes=%s)',
+    'sdk started (dropSyncSpans=%s, collapse=%s, baggageToAttributes=%s)',
     !!(processorConfig.dropSyncSpans ?? true),
-    processorConfig.enableReparenting ?? true,
+    processorConfig.enableCollapse ?? true,
     processorConfig.baggageToAttributes ?? true,
   )
 

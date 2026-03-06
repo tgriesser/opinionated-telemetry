@@ -14,7 +14,7 @@ export class OpinionatedInstrumentation {
   /**
    * Wraps an already-constructed instrumentation instance with opinionated options.
    *
-   *   new OpinionatedInstrumentation(new KnexInstrumentation(), { reparent: true })
+   *   new OpinionatedInstrumentation(new KnexInstrumentation(), { collapse: true })
    */
   constructor(instrumentation: Instrumentation, options?: OpinionatedOptions) {
     this.instrumentation = instrumentation

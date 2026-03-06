@@ -4,7 +4,7 @@ We've thought a lot about Telemetry in Node.js, so you don't have to
 
 "Opinionated" OpenTelemetry instrumentation patterns extracted from years of learnings from real-world o11y, extracted to help Node.js projects eveywhere. Sensible defaults, tools, and hooks to help you cut out the noise and cost from default "instrument everything" implementations, and help you really drill down and understand what's most important.
 
-The defaults included may or may not be right for you, so be sure to read the options carefully. Comes with powerful hooks for sampling spans, dropping spans, reparenting, globally "auto-instrumenting" important bits of your own code, as well as some nice helpers for some libraries I've used in the past.
+The defaults included may or may not be right for you, so be sure to read the options carefully. Comes with powerful hooks for sampling spans, dropping spans, collapsing intermediate spans, globally "auto-instrumenting" important bits of your own code, as well as some nice helpers for some libraries I've used in the past.
 
 Contributions & feedback are welcome, especially if you have other libraries you have "opinionated" defaults for.
 
@@ -15,7 +15,7 @@ Best suited for & meant use with [Honeycomb.io](https://www.honeycomb.io/). Virt
 
 - **Stuck span detection**: detects in-flight spans exceeding a threshold and exports early "diagnostic" span snapshots, so you can understand what might be broken sooner (long queries, hung requests, etc.)
 - **Sync span dropping**: automatically drops "synchronous" spans that are start and end in the same tick by default, configurable to allow for keeping specific spans e.g. keeping sync spans > `100ms`, or spans with a certain name, etc.
-- **Span reparenting**: allows us to drop intermediate spans (e.g. knex, graphql) and merge their attributes into child spans as baggage. No use having both a `knex` span that has a single nested `pg` or `mysql` span underneath, unless there is an error in the `knex` span or something
+- **Span collapsing**: allows us to drop intermediate spans (e.g. knex, graphql) and merge their attributes into child spans. No use having both a `knex` span that has a single nested `pg` or `mysql` span underneath, unless there is an error in the `knex` span or something
 - **Baggage propagation**: propagates baggage entries as span attributes on all child spans by default
 - **Memory & Memory delta tracking**: captures RSS (or detailed heap, configurable) memory & memory deltas on root spans.
 - **Auto-instrumentation**: [opt-in hooks](#auto-instrumentation) wraps exported async functions from your own codebase with auto-spans based on the function or method name, configured via `ESM` or `Module._load` patching
@@ -54,7 +54,7 @@ const { sdk, getTracer, shutdown } = opinionatedTelemetryInit({
     new OpinionatedInstrumentation(
       new KnexInstrumentation({ maxQueryLength: 10000 }),
       {
-        reparent: true,
+        collapse: true,
       },
     ),
   ],
@@ -75,7 +75,7 @@ opinionatedTelemetryInit({
   metricReader?: MetricReader,
   spanLimits?: SpanLimits,
   dropSyncSpans?: true | ((span) => boolean),        // default: true
-  enableReparenting?: boolean,                       // default: true
+  enableCollapse?: boolean,                           // default: true
   baggageToAttributes?: boolean,                     // default: true
   memory?: boolean | MemoryConfig,              // default: true (rss only)
   memoryDelta?: boolean | MemoryConfig,              // default: true (rss only)
@@ -217,7 +217,7 @@ new OpinionatedInstrumentation(instrumentationInstance, opinionatedOptions?)
 
 Options:
 
-- `reparent`: drop this span, merge attrs into children, reparent children to grandparent
+- `collapse` -- drop this span, merge attrs into children, reparent children to grandparent
 - `aggregate`: `true` or an `AggregateConfig` to collapse parallel sibling spans into a single aggregate
 - `renameSpan(span)`: rename in onStart
 - `renameSpanOnEnd(span)`: rename in onEnd
@@ -226,7 +226,7 @@ Options:
 
 ### `FilteringSpanProcessor`
 
-Span processor that handles sync span dropping, baggage propagation, reparenting, and custom hooks. Used internally by `opinionatedTelemetryInit` but can be used standalone.
+Span processor that handles sync span dropping, baggage propagation, span collapsing, and custom hooks. Used internally by `opinionatedTelemetryInit` but can be used standalone.
 
 ### Baggage utilities
 

@@ -111,12 +111,12 @@ describe('FilteringSpanProcessor', () => {
     })
   })
 
-  describe('reparenting', () => {
-    it('reparents child spans when instrumentation has reparent: true', async () => {
-      // Register a mock instrumentation with reparent
-      // Use 'reparent-scope' as the instrumentation name
+  describe('collapseing', () => {
+    it('collapses child spans when instrumentation has collapse: true', async () => {
+      // Register a mock instrumentation with collapse
+      // Use 'collapse-scope' as the instrumentation name
       const mockInst = {
-        instrumentationName: 'reparent-scope',
+        instrumentationName: 'collapse-scope',
         instrumentationVersion: '1.0.0',
         setTracerProvider() {},
         setMeterProvider() {},
@@ -128,30 +128,30 @@ describe('FilteringSpanProcessor', () => {
         disable() {},
       } as any
 
-      new OpinionatedInstrumentation(mockInst, { reparent: true })
+      new OpinionatedInstrumentation(mockInst, { collapse: true })
 
       const { provider, getSpans, shutdown } = createTestProvider({
         dropSyncSpans: false,
       })
 
-      // Use a tracer named 'reparent-scope' so spans get that instrumentationScope
-      const reparentTracer = provider.getTracer('reparent-scope')
+      // Use a tracer named 'collapse-scope' so spans get that instrumentationScope
+      const collapseTracer = provider.getTracer('collapse-scope')
       const normalTracer = provider.getTracer('test')
 
-      // Simulate: grandparent -> reparent-span -> child
+      // Simulate: grandparent -> collapse-span -> child
       const grandparent = normalTracer.startSpan('grandparent')
 
       context.with(trace.setSpan(context.active(), grandparent), () => {
-        // Create a span from the reparent tracer (gets instrumentationScope 'reparent-scope')
-        const reparentSpan = reparentTracer.startSpan('reparent-target')
-        reparentSpan.setAttribute('parent.attr', 'from-parent')
+        // Create a span from the collapse tracer (gets instrumentationScope 'collapse-scope')
+        const collapseSpan = collapseTracer.startSpan('collapse-target')
+        collapseSpan.setAttribute('parent.attr', 'from-parent')
 
-        context.with(trace.setSpan(context.active(), reparentSpan), () => {
+        context.with(trace.setSpan(context.active(), collapseSpan), () => {
           const child = normalTracer.startSpan('child-span')
           child.setAttribute('child.attr', 'yes')
           child.end()
         })
-        reparentSpan.end()
+        collapseSpan.end()
       })
 
       grandparent.end()
@@ -159,9 +159,9 @@ describe('FilteringSpanProcessor', () => {
 
       const spans = getSpans()
       const childSpan = spans.find((s) => s.name === 'child-span')
-      // The reparent-target span should be dropped
-      const reparentSpan = spans.find((s) => s.name === 'reparent-target')
-      expect(reparentSpan).toBeUndefined()
+      // The collapse-target span should be dropped
+      const collapseSpan = spans.find((s) => s.name === 'collapse-target')
+      expect(collapseSpan).toBeUndefined()
 
       // The child should have inherited the parent's attributes
       expect(childSpan).toBeDefined()
@@ -271,11 +271,11 @@ describe('FilteringSpanProcessor', () => {
     })
   })
 
-  describe('reparenting chain', () => {
-    it('walks up a multi-level reparent chain', async () => {
-      // Register two reparent instrumentations
+  describe('collapseing chain', () => {
+    it('walks up a multi-level collapse chain', async () => {
+      // Register two collapse instrumentations
       const mockInstA = {
-        instrumentationName: 'reparent-a',
+        instrumentationName: 'collapse-a',
         instrumentationVersion: '1.0.0',
         setTracerProvider() {},
         setMeterProvider() {},
@@ -287,7 +287,7 @@ describe('FilteringSpanProcessor', () => {
         disable() {},
       } as any
       const mockInstB = {
-        instrumentationName: 'reparent-b',
+        instrumentationName: 'collapse-b',
         instrumentationVersion: '1.0.0',
         setTracerProvider() {},
         setMeterProvider() {},
@@ -299,26 +299,26 @@ describe('FilteringSpanProcessor', () => {
         disable() {},
       } as any
 
-      new OpinionatedInstrumentation(mockInstA, { reparent: true })
-      new OpinionatedInstrumentation(mockInstB, { reparent: true })
+      new OpinionatedInstrumentation(mockInstA, { collapse: true })
+      new OpinionatedInstrumentation(mockInstB, { collapse: true })
 
       const { provider, getSpans, shutdown } = createTestProvider({
         dropSyncSpans: false,
       })
 
-      const tracerA = provider.getTracer('reparent-a')
-      const tracerB = provider.getTracer('reparent-b')
+      const tracerA = provider.getTracer('collapse-a')
+      const tracerB = provider.getTracer('collapse-b')
       const normalTracer = provider.getTracer('test')
 
-      // grandparent -> reparent-a -> reparent-b -> child
+      // grandparent -> collapse-a -> collapse-b -> child
       const grandparent = normalTracer.startSpan('grandparent')
 
       context.with(trace.setSpan(context.active(), grandparent), () => {
-        const spanA = tracerA.startSpan('reparent-a-span')
+        const spanA = tracerA.startSpan('collapse-a-span')
         spanA.setAttribute('from.a', 'yes')
 
         context.with(trace.setSpan(context.active(), spanA), () => {
-          const spanB = tracerB.startSpan('reparent-b-span')
+          const spanB = tracerB.startSpan('collapse-b-span')
           spanB.setAttribute('from.b', 'yes')
 
           context.with(trace.setSpan(context.active(), spanB), () => {
@@ -334,11 +334,11 @@ describe('FilteringSpanProcessor', () => {
       await shutdown()
 
       const spans = getSpans()
-      // Both reparent spans should be dropped
-      expect(spans.find((s) => s.name === 'reparent-a-span')).toBeUndefined()
-      expect(spans.find((s) => s.name === 'reparent-b-span')).toBeUndefined()
+      // Both collapse spans should be dropped
+      expect(spans.find((s) => s.name === 'collapse-a-span')).toBeUndefined()
+      expect(spans.find((s) => s.name === 'collapse-b-span')).toBeUndefined()
 
-      // Child should exist and inherit attributes from the top of the reparent chain (spanA)
+      // Child should exist and inherit attributes from the top of the collapse chain (spanA)
       const child = spans.find((s) => s.name === 'deep-child')
       expect(child).toBeDefined()
       expect(child!.attributes['from.a']).toBe('yes')
