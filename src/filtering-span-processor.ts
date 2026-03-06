@@ -8,9 +8,12 @@ import { ROOT_CONTEXT, propagation } from '@opentelemetry/api'
 import { performance } from 'node:perf_hooks'
 import debugLib from 'debug'
 import { OpinionatedInstrumentation } from './opinionated-instrumentation.js'
+// Private import — used for instanceof checks and constructing snapshot spans.
+// Pinned to @opentelemetry/sdk-trace-base v2.x. If the SDK restructures its
+// build output, this import will fail at startup (not silently).
 import { SpanImpl } from '@opentelemetry/sdk-trace-base/build/src/Span.js'
 
-const debug = debugLib('opin-tel:filtering-processor')
+const debug = debugLib('opin_tel:filtering-processor')
 const TICK_KEY = '__tick'
 const MEMORY_KEY = '__memStart'
 const ELU_KEY = '__eluStart'
@@ -35,7 +38,7 @@ export interface MemoryDeltaConfig {
 }
 
 export interface StuckSpanConfig {
-  /** How long a span must be in-flight before it's considered stuck. Default: 30_000ms */
+  /** How long a span must be in-flight before it's considered stuck. Default: 60_000ms */
   thresholdMs?: number
   /** How often to check for stuck spans. Default: 5_000ms */
   intervalMs?: number
@@ -58,11 +61,16 @@ export interface FilteringSpanProcessorConfig {
    * - `false`: disable
    */
   memoryDelta?: boolean | MemoryDeltaConfig
-  /** Capture event loop utilization on root spans. Default: true */
-  eventLoopUtilization?: boolean
+  /**
+   * Capture event loop utilization on spans.
+   * - `true` (default): capture on all spans
+   * - `'root'`: capture on root spans only
+   * - `false`: disable
+   */
+  eventLoopUtilization?: boolean | 'root'
   /** Called when a span ends after shutdown and won't be exported. Default: debug log */
   onSpanAfterShutdown?: (span: Span & ReadableSpan) => void
-  /** Enable stuck span detection. Default: false */
+  /** Enable stuck span detection. Default: true */
   stuckSpanDetection?: boolean | StuckSpanConfig
 }
 
@@ -79,7 +87,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
   private _memoryFastPath = false
   /** When set, use full process.memoryUsage() and capture these keys/attribute names */
   private _memoryKeys: [MemoryDeltaKey, string][] = []
-  private _eventLoopUtilization = false
+  private _eventLoopUtilization: boolean | 'root' = false
   private _stuckSpanInterval: ReturnType<typeof setInterval> | null = null
   private _reportedStuckSpans = new Set<string>()
   private _stuckSpanConfig: StuckSpanConfig | null = null
@@ -93,7 +101,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       memoryDelta: config?.memoryDelta ?? true,
       eventLoopUtilization: config?.eventLoopUtilization ?? true,
       onSpanAfterShutdown: config?.onSpanAfterShutdown,
-      stuckSpanDetection: config?.stuckSpanDetection ?? false,
+      stuckSpanDetection: config?.stuckSpanDetection ?? true,
     }
     const md = this._config.memoryDelta
     if (md === true) {
@@ -101,9 +109,9 @@ export class FilteringSpanProcessor implements SpanProcessor {
     } else if (md && typeof md === 'object') {
       this._memoryKeys = (Object.keys(md) as MemoryDeltaKey[])
         .filter((k) => md[k])
-        .map((k) => [k, `memory.delta.${camelToSnake(k)}`])
+        .map((k) => [k, `opin_tel.memory_delta.${camelToSnake(k)}`])
     }
-    this._eventLoopUtilization = !!this._config.eventLoopUtilization
+    this._eventLoopUtilization = this._config.eventLoopUtilization ?? true
     if (this._config.stuckSpanDetection) {
       const ssd = this._config.stuckSpanDetection
       this._stuckSpanConfig = typeof ssd === 'object' ? ssd : {}
@@ -154,11 +162,6 @@ export class FilteringSpanProcessor implements SpanProcessor {
             value: process.memoryUsage(),
           })
         }
-        if (this._eventLoopUtilization) {
-          Object.defineProperty(span, ELU_KEY, {
-            value: performance.eventLoopUtilization(),
-          })
-        }
       } else {
         debug(
           'multiple root spans for trace=%s span=%s',
@@ -166,6 +169,16 @@ export class FilteringSpanProcessor implements SpanProcessor {
           span.name,
         )
       }
+    }
+
+    // Snapshot ELU at span start
+    if (
+      this._eventLoopUtilization === true ||
+      (this._eventLoopUtilization === 'root' && !span.parentSpanContext)
+    ) {
+      Object.defineProperty(span, ELU_KEY, {
+        value: performance.eventLoopUtilization(),
+      })
     }
 
     // Check opinionated options for this instrumentation scope
@@ -191,15 +204,15 @@ export class FilteringSpanProcessor implements SpanProcessor {
     this._wrapped.onStart(span, ctx)
   }
 
-  onEnd(span: SpanImpl): void {
-    this._allSpans.delete(span)
+  onEnd(span: ReadableSpan): void {
+    this._allSpans.delete(span as Span)
     this._reportedStuckSpans.delete(span.spanContext().spanId)
 
     // Drop sync spans
     if (this._config.dropSyncSpans) {
       const shouldDrop =
         typeof this._config.dropSyncSpans === 'function'
-          ? this._config.dropSyncSpans(span)
+          ? this._config.dropSyncSpans(span as Span & ReadableSpan)
           : (span as any)[TICK_KEY] === this._currentTick
       if (shouldDrop) {
         debug('dropping sync span: %s', span.name)
@@ -207,15 +220,20 @@ export class FilteringSpanProcessor implements SpanProcessor {
       }
     }
 
-    // Reopen the span for additional modifications in the onEnd
-    span['_ended'] = false
+    const isSpanImpl = span instanceof SpanImpl
+    if (isSpanImpl) {
+      // Reopen the span for additional modifications in the onEnd
+      ;(span as SpanImpl)['_ended'] = false
+    }
 
-    this._enrichSpan(span)
+    this._enrichSpan(span as Span & ReadableSpan)
+
+    if (isSpanImpl) {
+      ;(span as SpanImpl)['_ended'] = true
+    }
 
     // Reparenting drop decision (not part of enrichment)
     if (span.parentSpanContext && this._config.enableReparenting) {
-      span['_ended'] = true
-
       // Drop spans that were marked for reparenting
       const shouldDropSpan = this._reparentSpans.has(span.spanContext().spanId)
       if (shouldDropSpan) {
@@ -226,7 +244,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     }
 
     if (this._didShutdown) {
-      this._onSpanAfterShutdown(span)
+      this._onSpanAfterShutdown(span as Span & ReadableSpan)
       return
     }
 
@@ -249,7 +267,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
   private _reapStuckSpans(): void {
     if (!this._stuckSpanConfig) return
-    const thresholdMs = this._stuckSpanConfig.thresholdMs ?? 30_000
+    const thresholdMs = this._stuckSpanConfig.thresholdMs ?? 60_000
     const nowMs = Date.now()
 
     for (const span of this._allSpans) {
@@ -285,8 +303,8 @@ export class FilteringSpanProcessor implements SpanProcessor {
         startTime: readable.startTime,
         attributes: {
           ...readable.attributes,
-          'stuck.duration_ms': Math.round(durationMs),
-          'stuck.is_snapshot': true,
+          'opin_tel.stuck.duration_ms': Math.round(durationMs),
+          'opin_tel.stuck.is_snapshot': true,
         },
         spanLimits: (span as any)._spanLimits,
         spanProcessor: this._wrapped,
@@ -307,7 +325,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     }
   }
 
-  private _enrichSpan(span: SpanImpl): void {
+  private _enrichSpan(span: Span & ReadableSpan): void {
     // Instrumentation hooks
     const scope = (span as any).instrumentationScope?.name
     if (scope) {
@@ -331,7 +349,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       if (startMem != null) {
         if (this._memoryFastPath) {
           span.setAttribute(
-            'memory.delta.rss',
+            'opin_tel.memory_delta.rss',
             process.memoryUsage.rss() - (startMem as number),
           )
         } else {
@@ -346,18 +364,18 @@ export class FilteringSpanProcessor implements SpanProcessor {
       }
     }
 
-    // Event loop utilization for root spans
-    if (!span.parentSpanContext) {
-      const startElu = (span as any)[ELU_KEY]
-      if (startElu != null) {
-        const delta = performance.eventLoopUtilization(startElu)
-        span.setAttribute('elu.utilization', delta.utilization)
-      }
+    // Event loop utilization
+    const startElu = (span as any)[ELU_KEY]
+    if (startElu != null) {
+      const delta = performance.eventLoopUtilization(startElu)
+      span.setAttribute('opin_tel.event_loop.utilization', delta.utilization)
     }
 
     // Reparenting attribute inheritance
     if (!span.parentSpanContext) {
-      this._rootSpans.delete(span.spanContext().traceId)
+      if (!span.attributes['opin_tel.stuck.is_snapshot']) {
+        this._rootSpans.delete(span.spanContext().traceId)
+      }
     } else if (this._config.enableReparenting) {
       const parentSpanId = (span as any).parentSpanContext.spanId
       let reparentSpan = this._reparentSpans.get(parentSpanId)
@@ -377,15 +395,15 @@ export class FilteringSpanProcessor implements SpanProcessor {
           reparentSpan.parentSpanContext?.spanId,
         )
         for (const [key, val] of Object.entries(reparentSpan.attributes)) {
-          if (!span.attributes[key]) {
+          if (!span.attributes[key] && val != null) {
             span.setAttribute(key, val)
           }
         }
-        // Skip parentSpanContext reassignment for snapshots
-        if (!span.attributes['stuck.is_snapshot']) {
+        // Snapshots keep their original parent so we can see which intermediate
+        // span the stuck span is waiting under — the real span gets reparented when it ends.
+        if (!span.attributes['opin_tel.stuck.is_snapshot']) {
           // @ts-expect-error - readonly attribute, but we know what we're doing
           span['parentSpanContext'] = reparentSpan.parentSpanContext
-          span['_ended'] = true
         }
       }
     }

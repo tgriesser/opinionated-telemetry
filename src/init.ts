@@ -18,7 +18,7 @@ const DEFAULT_SPAN_LIMITS = {
   attributePerLinkCountLimit: 2000,
 }
 
-const debug = debugLib('opin-tel:init')
+const debug = debugLib('opin_tel:init')
 
 export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
   const {
@@ -31,6 +31,7 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     enableReparenting = true,
     baggageToAttributes = true,
     memoryDelta,
+    eventLoopUtilization,
     onSpanAfterShutdown,
     stuckSpanDetection,
     shutdownSignal = 'SIGTERM',
@@ -61,6 +62,7 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     enableReparenting,
     baggageToAttributes,
     memoryDelta,
+    eventLoopUtilization,
     onSpanAfterShutdown,
     stuckSpanDetection,
   })

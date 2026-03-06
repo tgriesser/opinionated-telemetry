@@ -47,4 +47,11 @@ export class OpinionatedInstrumentation {
   static getAllOptions(): ReadonlyMap<string, OpinionatedOptions> {
     return registry
   }
+
+  /**
+   * Clear all registered options. Useful for re-initialization or test cleanup.
+   */
+  static clearRegistry(): void {
+    registry.clear()
+  }
 }

@@ -2,13 +2,11 @@ import { crc32 } from 'node:zlib'
 import { trace } from '@opentelemetry/api'
 import debugLib from 'debug'
 
-const debug = debugLib('opin-tel:knex')
+const debug = debugLib('opin_tel:knex')
 
 export interface KnexOtelConfig {
   /** Custom hash function for query+bindings. Default uses CRC32 */
   hashFn?: (input: any) => string
-  /** Custom function to sanitize a single binding value */
-  sanitizeBindingFn?: (value: any) => any
   /** Custom function to sanitize an array of bindings into a string */
   sanitizeBindingsFn?: (bindings: any[]) => string
   /** Capture sanitized bindings. Default: true */

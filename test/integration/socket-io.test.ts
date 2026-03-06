@@ -55,9 +55,10 @@ describe('otelPatchSocketIo (real Socket.IO)', () => {
     let baggageSeen: string | undefined
 
     ioServer.on('connection', (socket) => {
-      // Simulate a socket with jwt data
       ;(socket as any).jwt = { id: 'user-99' }
-      otelPatchSocketIo(socket)
+      otelPatchSocketIo(socket, {
+        getBaggage: (s) => ({ 'app.account.id': s.jwt?.id ?? '' }),
+      })
 
       socket.on('test-event', () => {
         const bag = propagation.getActiveBaggage()

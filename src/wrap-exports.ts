@@ -2,7 +2,7 @@ import { SpanStatusCode, type Tracer } from '@opentelemetry/api'
 import debugLib from 'debug'
 import type { IgnoreRuleEntry } from './types.js'
 
-const debug = debugLib('opin-tel:wrap-exports')
+const debug = debugLib('opin_tel:wrap-exports')
 
 /**
  * Wraps a single function with an OpenTelemetry span.
@@ -104,7 +104,7 @@ export function wrapModuleExports(
 
     const value = exports[key]
     if (typeof value !== 'function') continue
-    if (!value.toString().startsWith('async ')) continue
+    if (value.constructor?.name !== 'AsyncFunction') continue
 
     if (shouldIgnore(spanPrefix, key, ignoreRules)) {
       debug('ignoring %s:%s', spanPrefix, key)

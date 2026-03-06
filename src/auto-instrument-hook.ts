@@ -4,7 +4,7 @@ import { wrapModuleExports } from './wrap-exports.js'
 import { buildMatchers, matchPath } from './auto-instrument-matchers.js'
 import type { AutoInstrumentHookConfig } from './types.js'
 
-const debug = debugLib('opin-tel:auto-instrument')
+const debug = debugLib('opin_tel:auto-instrument')
 
 export function createAutoInstrumentHook(
   config: AutoInstrumentHookConfig,

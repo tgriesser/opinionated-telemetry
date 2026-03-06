@@ -357,8 +357,10 @@ describe('FilteringSpanProcessor', () => {
 
       const root = getSpans().find((s) => s.name === 'root-span')
       expect(root).toBeDefined()
-      expect(root!.attributes['memory.delta.rss']).toBeTypeOf('number')
-      expect(root!.attributes['memory.delta.heap_used']).toBeUndefined()
+      expect(root!.attributes['opin_tel.memory_delta.rss']).toBeTypeOf('number')
+      expect(
+        root!.attributes['opin_tel.memory_delta.heap_used'],
+      ).toBeUndefined()
     })
 
     it('captures specific fields when configured with object', async () => {
@@ -374,9 +376,13 @@ describe('FilteringSpanProcessor', () => {
 
       const root = getSpans().find((s) => s.name === 'root-span')
       expect(root).toBeDefined()
-      expect(root!.attributes['memory.delta.heap_used']).toBeTypeOf('number')
-      expect(root!.attributes['memory.delta.rss']).toBeTypeOf('number')
-      expect(root!.attributes['memory.delta.heap_total']).toBeUndefined()
+      expect(root!.attributes['opin_tel.memory_delta.heap_used']).toBeTypeOf(
+        'number',
+      )
+      expect(root!.attributes['opin_tel.memory_delta.rss']).toBeTypeOf('number')
+      expect(
+        root!.attributes['opin_tel.memory_delta.heap_total'],
+      ).toBeUndefined()
     })
 
     it('does not capture memory when disabled', async () => {
@@ -392,8 +398,10 @@ describe('FilteringSpanProcessor', () => {
 
       const root = getSpans().find((s) => s.name === 'root-span')
       expect(root).toBeDefined()
-      expect(root!.attributes['memory.delta.rss']).toBeUndefined()
-      expect(root!.attributes['memory.delta.heap_used']).toBeUndefined()
+      expect(root!.attributes['opin_tel.memory_delta.rss']).toBeUndefined()
+      expect(
+        root!.attributes['opin_tel.memory_delta.heap_used'],
+      ).toBeUndefined()
     })
 
     it('does not capture memory on child spans', async () => {
@@ -410,7 +418,7 @@ describe('FilteringSpanProcessor', () => {
 
       const child = getSpans().find((s) => s.name === 'child')
       expect(child).toBeDefined()
-      expect(child!.attributes['memory.delta.rss']).toBeUndefined()
+      expect(child!.attributes['opin_tel.memory_delta.rss']).toBeUndefined()
     })
   })
 
@@ -426,13 +434,13 @@ describe('FilteringSpanProcessor', () => {
 
       const root = getSpans().find((s) => s.name === 'root-span')
       expect(root).toBeDefined()
-      expect(root!.attributes['elu.utilization']).toBeTypeOf('number')
-      const elu = root!.attributes['elu.utilization'] as number
+      expect(root!.attributes['opin_tel.event_loop.utilization']).toBeTypeOf('number')
+      const elu = root!.attributes['opin_tel.event_loop.utilization'] as number
       expect(elu).toBeGreaterThanOrEqual(0)
       expect(elu).toBeLessThanOrEqual(1)
     })
 
-    it('does not capture elu on child spans', async () => {
+    it('captures elu on child spans too', async () => {
       const { tracer, getSpans, shutdown } = createTestProvider()
 
       await tracer.startActiveSpan('root', async (root) => {
@@ -446,7 +454,30 @@ describe('FilteringSpanProcessor', () => {
 
       const child = getSpans().find((s) => s.name === 'child')
       expect(child).toBeDefined()
-      expect(child!.attributes['elu.utilization']).toBeUndefined()
+      expect(child!.attributes['opin_tel.event_loop.utilization']).toBeTypeOf('number')
+    })
+
+    it('captures only on root spans when set to root', async () => {
+      const { tracer, getSpans, shutdown } = createTestProvider({
+        eventLoopUtilization: 'root',
+      })
+
+      await tracer.startActiveSpan('root', async (root) => {
+        const child = tracer.startSpan('child')
+        await nextTick()
+        child.end()
+        root.end()
+      })
+
+      await shutdown()
+
+      const root = getSpans().find((s) => s.name === 'root')
+      expect(root).toBeDefined()
+      expect(root!.attributes['opin_tel.event_loop.utilization']).toBeTypeOf('number')
+
+      const child = getSpans().find((s) => s.name === 'child')
+      expect(child).toBeDefined()
+      expect(child!.attributes['opin_tel.event_loop.utilization']).toBeUndefined()
     })
 
     it('does not capture elu when disabled', async () => {
@@ -462,7 +493,7 @@ describe('FilteringSpanProcessor', () => {
 
       const root = getSpans().find((s) => s.name === 'root-span')
       expect(root).toBeDefined()
-      expect(root!.attributes['elu.utilization']).toBeUndefined()
+      expect(root!.attributes['opin_tel.event_loop.utilization']).toBeUndefined()
     })
   })
 
@@ -487,9 +518,13 @@ describe('FilteringSpanProcessor', () => {
       const spans = getSpans()
       const stuck = spans.find((s) => s.name === 'slow-op (incomplete)')
       expect(stuck).toBeDefined()
-      expect(stuck!.attributes['stuck.is_snapshot']).toBe(true)
-      expect(stuck!.attributes['stuck.duration_ms']).toBeTypeOf('number')
-      expect(stuck!.attributes['stuck.duration_ms']).toBeGreaterThanOrEqual(100)
+      expect(stuck!.attributes['opin_tel.stuck.is_snapshot']).toBe(true)
+      expect(stuck!.attributes['opin_tel.stuck.duration_ms']).toBeTypeOf(
+        'number',
+      )
+      expect(
+        stuck!.attributes['opin_tel.stuck.duration_ms'],
+      ).toBeGreaterThanOrEqual(100)
 
       span.end()
       await processor.shutdown()
@@ -603,13 +638,13 @@ describe('FilteringSpanProcessor', () => {
       vi.advanceTimersByTime(150)
 
       await processor.forceFlush()
-      const stuck = getSpans().find(
-        (s) => s.name === 'stuck-root (incomplete)',
-      )
+      const stuck = getSpans().find((s) => s.name === 'stuck-root (incomplete)')
       expect(stuck).toBeDefined()
-      expect(stuck!.attributes['stuck.is_snapshot']).toBe(true)
-      expect(stuck!.attributes['memory.delta.rss']).toBeTypeOf('number')
-      expect(stuck!.attributes['elu.utilization']).toBeTypeOf('number')
+      expect(stuck!.attributes['opin_tel.stuck.is_snapshot']).toBe(true)
+      expect(stuck!.attributes['opin_tel.memory_delta.rss']).toBeTypeOf(
+        'number',
+      )
+      expect(stuck!.attributes['opin_tel.event_loop.utilization']).toBeTypeOf('number')
 
       await processor.shutdown()
       vi.useRealTimers()
@@ -661,12 +696,21 @@ describe('FilteringSpanProcessor', () => {
       vi.useRealTimers()
     })
 
-    it('is disabled by default', () => {
+    it('is enabled by default', () => {
       const { processor } = createTestProvider({
         dropSyncSpans: false,
       })
 
-      // No interval should be created — check via the private field
+      expect((processor as any)._stuckSpanInterval).not.toBeNull()
+      processor.shutdown()
+    })
+
+    it('can be disabled explicitly', () => {
+      const { processor } = createTestProvider({
+        dropSyncSpans: false,
+        stuckSpanDetection: false,
+      })
+
       expect((processor as any)._stuckSpanInterval).toBeNull()
       processor.shutdown()
     })

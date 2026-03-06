@@ -20,7 +20,7 @@ export interface OpinionatedTelemetryConfig {
   metricReader?: MetricReader
   spanLimits?: SpanLimits
   /** Drop spans that start and end in the same tick. Default: true */
-  dropSyncSpans?: true | ((span: Span & ReadableSpan) => boolean)
+  dropSyncSpans?: boolean | ((span: Span & ReadableSpan) => boolean)
   /** Enable reparenting for instrumentations that opt in. Default: true */
   enableReparenting?: boolean
   /** Propagate baggage entries as span attributes. Default: true */
@@ -33,9 +33,16 @@ export interface OpinionatedTelemetryConfig {
    * - `false`: disable
    */
   memoryDelta?: boolean | MemoryDeltaConfig
+  /**
+   * Capture event loop utilization on spans.
+   * - `true` (default): capture on all spans
+   * - `'root'`: capture on root spans only
+   * - `false`: disable
+   */
+  eventLoopUtilization?: boolean | 'root'
   /** Called when a span ends after shutdown and won't be exported. Default: debug log */
   onSpanAfterShutdown?: (span: Span & ReadableSpan) => void
-  /** Enable stuck span detection. Default: false */
+  /** Enable stuck span detection. Default: true */
   stuckSpanDetection?: boolean | StuckSpanConfig
   /** Signal to register shutdown handler on. Default: 'SIGTERM' */
   shutdownSignal?: string

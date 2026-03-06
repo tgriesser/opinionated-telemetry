@@ -6,7 +6,7 @@ import { wrapModuleExports } from './wrap-exports.js'
 import { buildMatchers, matchPath } from './auto-instrument-matchers.js'
 import type { AutoInstrumentHookConfig } from './types.js'
 
-const debug = debugLib('opin-tel:auto-instrument-esm')
+const debug = debugLib('opin_tel:auto-instrument-esm')
 
 /**
  * Creates an ESM auto-instrument hook using import-in-the-middle.

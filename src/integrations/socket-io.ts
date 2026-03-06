@@ -2,7 +2,7 @@ import { context, metrics } from '@opentelemetry/api'
 import debugLib from 'debug'
 import { withBaggage } from '../baggage.js'
 
-const debug = debugLib('opin-tel:socket-io')
+const debug = debugLib('opin_tel:socket-io')
 
 export interface SocketOtelConfig {
   /** Meter name. Default: 'socket-io-otel' */
@@ -10,8 +10,8 @@ export interface SocketOtelConfig {
 }
 
 export interface PatchSocketOtelConfig {
-  /** Function to extract baggage entries from the socket. */
-  getBaggage?: (socket: any) => Record<string, unknown>
+  /** Function to extract baggage entries from the socket. Required. */
+  getBaggage: (socket: any) => Record<string, unknown>
 }
 
 /**
@@ -36,13 +36,9 @@ export function otelInitSocketIo(io: any, config?: SocketOtelConfig): void {
  */
 export function otelPatchSocketIo(
   socket: any,
-  config?: PatchSocketOtelConfig,
+  config: PatchSocketOtelConfig,
 ): void {
-  const getBaggage =
-    config?.getBaggage ??
-    ((s: any) => ({
-      'app.account.id': s.jwt?.id ?? '',
-    }))
+  const { getBaggage } = config
 
   debug('patching socket.on for baggage injection')
   const originalOn = socket.on.bind(socket)

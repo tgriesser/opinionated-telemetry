@@ -2,7 +2,7 @@ import { context, trace } from '@opentelemetry/api'
 import debugLib from 'debug'
 import { withBaggage } from '../baggage.js'
 
-const debug = debugLib('opin-tel:graphql')
+const debug = debugLib('opin_tel:graphql')
 
 export interface ShouldWrapResolverInfo {
   field: any
@@ -28,6 +28,10 @@ export interface GraphqlOtelConfig {
  */
 export function otelInitGraphql(schema: any, config: GraphqlOtelConfig): void {
   const { fieldResolver, shouldWrapResolver } = config
+
+  // Cache extracted graphql.* attrs per span — shared across all wrapped fields
+  // so the attribute scan happens at most once per span regardless of field count
+  const spanAttrs = new WeakMap<any, Record<string, any>>()
 
   const typeMap = schema.getTypeMap()
   for (const [typeName, type] of Object.entries(typeMap)) {
@@ -60,7 +64,6 @@ export function otelInitGraphql(schema: any, config: GraphqlOtelConfig): void {
       }
 
       debug('wrapping %s.%s', typeName, fieldName)
-      const spanAttrs = new WeakMap<any, Record<string, any>>()
       field.resolve = function otelWrappedResolver(
         source: any,
         args: any,

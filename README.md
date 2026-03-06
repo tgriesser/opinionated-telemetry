@@ -7,6 +7,9 @@ Opinionated OpenTelemetry instrumentation patterns extracted for reuse across No
 - **Sync span dropping** -- automatically drops spans that start and end in the same tick
 - **Span reparenting** -- drops intermediate spans (e.g. knex, graphql) and merges their attributes into child spans
 - **Baggage propagation** -- propagates baggage entries as span attributes on all child spans
+- **Memory delta tracking** -- captures RSS (or detailed heap) memory deltas on root spans
+- **Event loop utilization** -- captures event loop utilization (0-1) on all spans
+- **Stuck span detection** -- detects in-flight spans exceeding a threshold and exports diagnostic snapshots
 - **Auto-instrumentation** -- wraps exported async functions with spans via `Module._load` patching
 - **Integration helpers** -- knex, graphql, bull, socket.io, express
 
@@ -57,16 +60,44 @@ opinionatedTelemetryInit({
   traceExporter?: SpanExporter,
   metricReader?: MetricReader,
   spanLimits?: SpanLimits,
-  dropSyncSpans?: true | ((span) => boolean),  // default: true
-  enableReparenting?: boolean,                 // default: true
-  baggageToAttributes?: boolean,               // default: true
-  shutdownSignal?: string,                     // default: 'SIGTERM'
+  dropSyncSpans?: true | ((span) => boolean),       // default: true
+  enableReparenting?: boolean,                       // default: true
+  baggageToAttributes?: boolean,                     // default: true
+  memoryDelta?: boolean | MemoryDeltaConfig,         // default: true (rss only)
+  eventLoopUtilization?: boolean | 'root',             // default: true (all spans)
+  stuckSpanDetection?: boolean | StuckSpanConfig,    // default: true
+  onSpanAfterShutdown?: (span) => void,              // default: debug log
+  shutdownSignal?: string,                           // default: 'SIGTERM'
   instrumentations: Array<Instrumentation | OpinionatedInstrumentation>,
   additionalSpanProcessors?: SpanProcessor[],
 })
 ```
 
 Returns `{ sdk, getTracer, shutdown }`.
+
+#### `memoryDelta`
+
+Captures memory usage deltas on root spans. Set to `true` (default) for RSS-only via the fast `process.memoryUsage.rss()` path, or pass a `MemoryDeltaConfig` object to pick specific fields (`rss`, `heapTotal`, `heapUsed`, `external`, `arrayBuffers`) which uses the full `process.memoryUsage()` call. Set to `false` to disable.
+
+#### `eventLoopUtilization`
+
+Captures event loop utilization (0-1 ratio) via `performance.eventLoopUtilization()`. The `opin_tel.event_loop.utilization` attribute tells you how saturated the event loop was during the span's lifetime. Set to `true` (default) for all spans, `'root'` for root spans only, or `false` to disable.
+
+#### `stuckSpanDetection`
+
+Detects spans that remain in-flight longer than a threshold and exports diagnostic snapshots. Enabled by default (60s threshold, 5s check interval). Pass a `StuckSpanConfig` object to customize:
+
+```ts
+stuckSpanDetection: {
+  thresholdMs: 60_000,   // how long before a span is "stuck"
+  intervalMs: 5_000,     // how often to check
+  onStuckSpan: (span) => {
+    // return false to skip exporting this snapshot
+  },
+}
+```
+
+Stuck span snapshots are exported with the original span's trace/span IDs, an `(incomplete)` name suffix, and attributes `opin_tel.stuck.duration_ms` and `opin_tel.stuck.is_snapshot`. They also receive memory delta, ELU, and instrumentation hook enrichment.
 
 ### `OpinionatedInstrumentation`
 

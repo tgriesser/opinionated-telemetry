@@ -1,7 +1,7 @@
 import { trace, SpanStatusCode, SpanKind, type Link } from '@opentelemetry/api'
 import debugLib from 'debug'
 
-const debug = debugLib('opin-tel:bull')
+const debug = debugLib('opin_tel:bull')
 
 export interface BullOtelConfig {
   /** Tracer name. Default: 'bull-otel' */
@@ -98,9 +98,7 @@ export function otelInitBull(Bull: any, config?: BullOtelConfig): void {
 
   Bull.prototype.add = function patchedAdd(
     this: any,
-    name: any,
-    data: any,
-    opts: any,
+    ...args: any[]
   ) {
     const currentSpan = trace.getActiveSpan()
     const link = currentSpan
@@ -111,10 +109,14 @@ export function otelInitBull(Bull: any, config?: BullOtelConfig): void {
         }
       : undefined
 
-    if (typeof name === 'string') {
+    if (typeof args[0] === 'string') {
+      // add(name, data, opts?)
+      const [name, data, opts] = args
       return originalAdd.call(this, name, { ...data, __otelLink: link }, opts)
     }
-    return originalAdd.call(this, { ...name, __otelLink: link }, data)
+    // add(data, opts?)
+    const [data, opts] = args
+    return originalAdd.call(this, { ...data, __otelLink: link }, opts)
   }
 
   Bull.prototype.on = function patchedOn(
