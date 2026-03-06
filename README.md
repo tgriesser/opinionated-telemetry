@@ -146,22 +146,19 @@ Span processor that handles sync span dropping, baggage propagation, reparenting
 ```ts
 import { withBaggage, getBaggageValue } from 'opinionated-telemetry'
 
-// Set baggage on context
-const ctx = withBaggage({ 'app.account_id': '123' })
-context.with(ctx, () => {
-  /* ... */
+// Set baggage and run in that context
+withBaggage({ 'app.account_id': '123' }, () => {
+  // Read baggage
+  const accountId = getBaggageValue('app.account_id')
 })
-
-// Read baggage
-const accountId = getBaggageValue('app.account_id')
 ```
 
 ### Auto-instrumentation
 
 ```ts
-import { createAutoInstrumentHook } from 'opinionated-telemetry'
+import { createAutoInstrumentHookCJS } from 'opinionated-telemetry'
 
-createAutoInstrumentHook({
+createAutoInstrumentHookCJS({
   tracer: getTracer('auto-instrument'),
   instrumentPaths: [
     { base: '/app/src', dirs: ['controllers', 'helpers', 'lib'] },

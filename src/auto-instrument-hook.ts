@@ -6,7 +6,7 @@ import type { AutoInstrumentHookConfig } from './types.js'
 
 const debug = debugLib('opin_tel:auto-instrument')
 
-export function createAutoInstrumentHook(
+export function createAutoInstrumentHookCJS(
   config: AutoInstrumentHookConfig,
 ): void {
   const { tracer, instrumentPaths, ignoreRules = [] } = config

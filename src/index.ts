@@ -20,7 +20,7 @@ export {
 
 // Auto-instrumentation
 export { wrapModuleExports, wrapFunction } from './wrap-exports.js'
-export { createAutoInstrumentHook } from './auto-instrument-hook.js'
+export { createAutoInstrumentHookCJS } from './auto-instrument-hook.js'
 export { buildMatchers, matchPath } from './auto-instrument-matchers.js'
 export type { Matcher } from './auto-instrument-matchers.js'
 export { createAutoInstrumentHookESM } from './auto-instrument-hook-esm.js'

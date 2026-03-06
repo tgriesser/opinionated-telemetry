@@ -1,13 +1,17 @@
 import { context, propagation } from '@opentelemetry/api'
-import type { Context } from '@opentelemetry/api'
 
 const { createBaggage, setBaggage, getActiveBaggage } = propagation
 
 /**
- * Sets baggage entries on the current context and returns the new context.
- * Usage: context.with(withBaggage({ 'app.account_id': '123' }), () => { ... })
+ * Sets baggage entries on the current context and runs fn inside it.
+ * Returns whatever fn returns.
+ *
+ * Usage: withBaggage({ 'app.account_id': '123' }, () => { ... })
  */
-export function withBaggage(entries: Record<string, unknown>): Context {
+export function withBaggage<T>(
+  entries: Record<string, unknown>,
+  fn: () => T,
+): T {
   const currentBaggage = getActiveBaggage() || createBaggage()
   let updated = currentBaggage
   for (const [key, value] of Object.entries(entries)) {
@@ -15,7 +19,7 @@ export function withBaggage(entries: Record<string, unknown>): Context {
       updated = updated.setEntry(key, { value: String(value) })
     }
   }
-  return setBaggage(context.active(), updated)
+  return context.with(setBaggage(context.active(), updated), fn)
 }
 
 /**

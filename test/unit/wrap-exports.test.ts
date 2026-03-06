@@ -18,8 +18,8 @@ describe('wrapFunction', () => {
     const spans = exporter.getFinishedSpans()
     expect(spans.length).toBe(1)
     expect(spans[0].name).toBe('myFunc')
-    expect(spans[0].attributes['code.function']).toBe('myFunc')
-    expect(spans[0].attributes['code.filename']).toBe('test/file')
+    expect(spans[0].attributes['opin_tel.code.function']).toBe('myFunc')
+    expect(spans[0].attributes['opin_tel.code.filename']).toBe('test/file')
   })
 
   it('preserves function name', () => {

@@ -1,4 +1,4 @@
-import { context, trace } from '@opentelemetry/api'
+import { trace } from '@opentelemetry/api'
 import debugLib from 'debug'
 import { withBaggage } from '../baggage.js'
 
@@ -87,7 +87,7 @@ export function otelInitGraphql(schema: any, config: GraphqlOtelConfig): void {
           spanAttrs.set(span, asBaggage)
         }
 
-        return context.with(withBaggage(asBaggage), () =>
+        return withBaggage(asBaggage, () =>
           originalResolve.call(this, source, args, ctx, info),
         )
       }

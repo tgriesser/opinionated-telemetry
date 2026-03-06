@@ -1,4 +1,4 @@
-import { context, trace } from '@opentelemetry/api'
+import { trace } from '@opentelemetry/api'
 import { withBaggage } from '../baggage.js'
 
 export interface ExpressOtelConfig {
@@ -104,8 +104,7 @@ export function otelCreateExpressMiddleware(config?: ExpressOtelConfig) {
 
     // Set baggage and continue in that context
     if (Object.keys(baggageEntries).length > 0) {
-      const ctx = withBaggage(baggageEntries)
-      return context.with(ctx, () => next())
+      return withBaggage(baggageEntries, () => next())
     }
 
     next()

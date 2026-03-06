@@ -1,6 +1,7 @@
 import { SpanStatusCode, type Tracer } from '@opentelemetry/api'
 import debugLib from 'debug'
 import type { IgnoreRuleEntry } from './types.js'
+import { OPIN_TEL_INTERNAL } from './constants.js'
 
 const debug = debugLib('opin_tel:wrap-exports')
 
@@ -18,8 +19,8 @@ export function wrapFunction(
   const wrapper = {
     [fn.name || 'anonymous']: function (this: any, ...args: any[]) {
       return tracer.startActiveSpan(fnName, (span) => {
-        span.setAttribute('code.function', fnName)
-        span.setAttribute('code.filename', filename)
+        span.setAttribute(OPIN_TEL_INTERNAL.code.function, fnName)
+        span.setAttribute(OPIN_TEL_INTERNAL.code.filename, filename)
         try {
           const result = fn.apply(this, args)
 

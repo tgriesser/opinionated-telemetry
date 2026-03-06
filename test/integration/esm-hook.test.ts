@@ -76,7 +76,9 @@ describe('wrapModuleExports on plain objects (ESM namespace simulation)', () => 
     const spans = getSpans()
     expect(spans.length).toBe(1)
     expect(spans[0].name).toBe('asyncFn')
-    expect(spans[0].attributes['code.filename']).toBe('test/esm-module')
+    expect(spans[0].attributes['opin_tel.code.filename']).toBe(
+      'test/esm-module',
+    )
 
     await shutdown()
   })

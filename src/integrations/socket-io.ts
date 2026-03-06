@@ -1,4 +1,4 @@
-import { context, metrics } from '@opentelemetry/api'
+import { metrics } from '@opentelemetry/api'
 import debugLib from 'debug'
 import { withBaggage } from '../baggage.js'
 
@@ -44,8 +44,7 @@ export function otelPatchSocketIo(
   const originalOn = socket.on.bind(socket)
   socket.on = (event: string, handler: (...args: any[]) => any) => {
     return originalOn(event, (...args: any[]) => {
-      const ctx = withBaggage(getBaggage(socket))
-      return context.with(ctx, () => handler(...args))
+      return withBaggage(getBaggage(socket), () => handler(...args))
     })
   }
 }

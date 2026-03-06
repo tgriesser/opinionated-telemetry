@@ -3,7 +3,7 @@ import Module from 'node:module'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
-import { createAutoInstrumentHook } from '../../src/auto-instrument-hook.js'
+import { createAutoInstrumentHookCJS } from '../../src/auto-instrument-hook.js'
 import { createSimpleProvider, cleanupOtel } from '../helpers.js'
 
 let tmpDir: string
@@ -38,11 +38,11 @@ function writeTempModule(relativePath: string, content: string): string {
   return fullPath
 }
 
-describe('createAutoInstrumentHook', () => {
+describe('createAutoInstrumentHookCJS', () => {
   it('patches Module._load', () => {
     const { tracer } = createSimpleProvider()
 
-    createAutoInstrumentHook({
+    createAutoInstrumentHookCJS({
       tracer,
       instrumentPaths: [{ base: tmpDir, dirs: ['src'] }],
     })
@@ -64,7 +64,7 @@ describe('createAutoInstrumentHook', () => {
     `,
     )
 
-    createAutoInstrumentHook({
+    createAutoInstrumentHookCJS({
       tracer,
       instrumentPaths: [{ base: tmpDir, dirs: ['src'] }],
     })
@@ -86,7 +86,7 @@ describe('createAutoInstrumentHook', () => {
     const spans = getSpans()
     expect(spans).toHaveLength(1)
     expect(spans[0].name).toBe('doWork')
-    expect(spans[0].attributes['code.filename']).toBe('src/service')
+    expect(spans[0].attributes['opin_tel.code.filename']).toBe('src/service')
   })
 
   it('does not wrap exports from a non-matching module', async () => {
@@ -99,7 +99,7 @@ describe('createAutoInstrumentHook', () => {
     `,
     )
 
-    createAutoInstrumentHook({
+    createAutoInstrumentHookCJS({
       tracer,
       // Only matching "src" dir, not "other"
       instrumentPaths: [{ base: tmpDir, dirs: ['src'] }],
@@ -130,7 +130,7 @@ describe('createAutoInstrumentHook', () => {
     `,
     )
 
-    createAutoInstrumentHook({
+    createAutoInstrumentHookCJS({
       tracer,
       instrumentPaths: [{ base: tmpDir, dirs: ['src'] }],
       ignoreRules: ['src/ignored'],
@@ -146,7 +146,7 @@ describe('createAutoInstrumentHook', () => {
     const spans = getSpans()
     // Only the tracked module should produce a span
     expect(spans).toHaveLength(1)
-    expect(spans[0].attributes['code.filename']).toBe('src/tracked')
+    expect(spans[0].attributes['opin_tel.code.filename']).toBe('src/tracked')
   })
 
   it('respects object ignoreRules — ignores specific exports', async () => {
@@ -160,7 +160,7 @@ describe('createAutoInstrumentHook', () => {
     `,
     )
 
-    createAutoInstrumentHook({
+    createAutoInstrumentHookCJS({
       tracer,
       instrumentPaths: [{ base: tmpDir, dirs: ['src'] }],
       ignoreRules: [{ file: 'src/mixed', exports: ['blocked'] }],
@@ -189,7 +189,7 @@ describe('createAutoInstrumentHook', () => {
       `exports.fn = async function fn() { return 'after' }`,
     )
 
-    createAutoInstrumentHook({
+    createAutoInstrumentHookCJS({
       tracer,
       instrumentPaths: [{ base: tmpDir, dirs: ['src'] }],
     })
@@ -212,6 +212,6 @@ describe('createAutoInstrumentHook', () => {
     const spans = getSpans()
     // Only the "before" module should have produced a span
     expect(spans).toHaveLength(1)
-    expect(spans[0].attributes['code.filename']).toBe('src/before')
+    expect(spans[0].attributes['opin_tel.code.filename']).toBe('src/before')
   })
 })
