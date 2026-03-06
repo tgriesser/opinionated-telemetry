@@ -81,11 +81,37 @@ export interface OpinionatedTelemetryConfig extends FilteringSpanProcessorConfig
   additionalSpanProcessors?: SpanProcessor[]
 }
 
+export type AggregateGenericOption = 'uniq'
+
+export type AggregateNumericOption =
+  | AggregateGenericOption
+  | 'sum'
+  | 'count'
+  | 'min'
+  | 'max'
+  | 'range'
+  | 'avg'
+  | 'median'
+
+export interface AggregateAttributeConfig {
+  /** Source attribute name on the individual spans */
+  attribute: string
+  /** Stats to compute. A single option string or array of options. */
+  options: AggregateNumericOption | AggregateNumericOption[]
+}
+
+export interface AggregateConfig {
+  /** Export error spans individually. Default: true */
+  keepErrors?: boolean
+  /** Custom attribute stats to compute on the aggregate span */
+  attributes?: Record<string, AggregateAttributeConfig>
+}
+
 export interface OpinionatedOptions {
   /** Drop this span and reparent its children to its parent */
   reparent?: boolean
   /** Collapse parallel sibling spans with the same name into a single aggregate span */
-  aggregate?: boolean
+  aggregate?: boolean | AggregateConfig
   /** Rename span in onStart */
   renameSpan?: (
     spanName: string,

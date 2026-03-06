@@ -3,7 +3,7 @@ import type {
   Span,
   SpanProcessor,
 } from '@opentelemetry/sdk-trace-base'
-import type { Context } from '@opentelemetry/api'
+import type { Attributes, Context } from '@opentelemetry/api'
 import {
   ROOT_CONTEXT,
   propagation,
@@ -15,7 +15,7 @@ import { performance } from 'node:perf_hooks'
 import { crc32 } from 'node:zlib'
 import debugLib from 'debug'
 import { OpinionatedInstrumentation } from './opinionated-instrumentation.js'
-import type { SamplingConfig } from './types.js'
+import type { AggregateConfig, SamplingConfig } from './types.js'
 // Private import — used for instanceof checks and constructing snapshot spans.
 // Pinned to @opentelemetry/sdk-trace-base v2.x. If the SDK restructures its
 // build output, this import will fail at startup (not silently).
@@ -30,8 +30,15 @@ const AGGREGATE_KEY = '__aggregateKey'
 
 type HrTime = [number, number]
 
+interface AttributeTracker {
+  sourceAttribute: string
+  options: string[]
+  values: (string | number | boolean)[]
+}
+
 interface AggregateGroup {
   firstSpan: ReadableSpan
+  config: AggregateConfig
   inflight: number
   count: number
   errorCount: number
@@ -43,6 +50,7 @@ interface AggregateGroup {
   nonErrorCount: number
   bufferedFirstNonError: ReadableSpan | null
   createdAt: number
+  attrTrackers: Map<string, AttributeTracker> | null
 }
 
 type MemoryKey = keyof NodeJS.MemoryUsage
@@ -105,8 +113,8 @@ export interface FilteringSpanProcessorConfig {
   stuckSpanDetection?: boolean | StuckSpanConfig
   /** Sampling configuration for head, tail, and burst protection. */
   sampling?: SamplingConfig
-  /** Predicate to determine if a span should be aggregated with siblings of the same name */
-  aggregateSpan?: (span: Span & ReadableSpan) => boolean
+  /** Predicate to determine if a span should be aggregated. Return true for default config, or an AggregateConfig object. */
+  aggregateSpan?: (span: Span & ReadableSpan) => boolean | AggregateConfig
 }
 
 interface TailBufferEntry {
@@ -324,28 +332,49 @@ export class FilteringSpanProcessor implements SpanProcessor {
     }
 
     // Aggregate tracking for child spans
-    if (span.parentSpanContext && this._shouldAggregate(span)) {
-      const key = `${span.parentSpanContext.spanId}:${span.name}`
-      const group = this._aggregateGroups.get(key)
-      if (group) {
-        group.inflight++
-      } else {
-        this._aggregateGroups.set(key, {
-          firstSpan: span,
-          inflight: 1,
-          count: 0,
-          errorCount: 0,
-          earliestStart: [...span.startTime] as HrTime,
-          latestEnd: [0, 0],
-          totalDurationMs: 0,
-          minDurationMs: Infinity,
-          maxDurationMs: 0,
-          nonErrorCount: 0,
-          bufferedFirstNonError: null,
-          createdAt: Date.now(),
-        })
+    if (span.parentSpanContext) {
+      const aggConfig = this._resolveAggregateConfig(span)
+      if (aggConfig) {
+        const key = `${span.parentSpanContext.spanId}:${span.name}`
+        const group = this._aggregateGroups.get(key)
+        if (group) {
+          group.inflight++
+        } else {
+          let attrTrackers: Map<string, AttributeTracker> | null = null
+          if (aggConfig.attributes) {
+            attrTrackers = new Map()
+            for (const [outputKey, block] of Object.entries(
+              aggConfig.attributes,
+            )) {
+              const opts = Array.isArray(block.options)
+                ? block.options
+                : [block.options]
+              attrTrackers.set(outputKey, {
+                sourceAttribute: block.attribute,
+                options: opts,
+                values: [],
+              })
+            }
+          }
+          this._aggregateGroups.set(key, {
+            firstSpan: span,
+            config: aggConfig,
+            inflight: 1,
+            count: 0,
+            errorCount: 0,
+            earliestStart: [...span.startTime] as HrTime,
+            latestEnd: [0, 0],
+            totalDurationMs: 0,
+            minDurationMs: Infinity,
+            maxDurationMs: 0,
+            nonErrorCount: 0,
+            bufferedFirstNonError: null,
+            createdAt: Date.now(),
+            attrTrackers,
+          })
+        }
+        Object.defineProperty(span, AGGREGATE_KEY, { value: key })
       }
-      Object.defineProperty(span, AGGREGATE_KEY, { value: key })
     }
 
     this._wrapped.onStart(span, ctx)
@@ -478,19 +507,27 @@ export class FilteringSpanProcessor implements SpanProcessor {
     return this._wrapped.forceFlush()
   }
 
-  private _shouldAggregate(span: Span & ReadableSpan): boolean {
-    if (this._config.aggregateSpan?.(span)) return true
+  private _resolveAggregateConfig(
+    span: Span & ReadableSpan,
+  ): AggregateConfig | null {
+    if (this._config.aggregateSpan) {
+      const result = this._config.aggregateSpan(span)
+      if (result === true) return {}
+      if (result && typeof result === 'object') return result
+    }
     const scope = (span as any).instrumentationScope?.name
     if (scope) {
       const opts = OpinionatedInstrumentation.getOptions(scope)
-      if (opts?.aggregate) return true
+      if (opts?.aggregate === true) return {}
+      if (opts?.aggregate && typeof opts.aggregate === 'object')
+        return opts.aggregate
     }
-    return false
+    return null
   }
 
   /**
    * Handle a span that belongs to an aggregate group.
-   * Returns true if the span was consumed (non-error), false if it should fall through (error).
+   * Returns true if the span was consumed, false if it should fall through (error with keepErrors).
    */
   private _handleAggregateSpan(
     span: ReadableSpan,
@@ -518,6 +555,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     }
 
     const isError = span.status.code === SpanStatusCode.ERROR
+    const keepErrors = group.config.keepErrors !== false
 
     if (isError) {
       group.errorCount++
@@ -533,21 +571,43 @@ export class FilteringSpanProcessor implements SpanProcessor {
       }
     }
 
+    // Track attribute values (from all spans, including errors)
+    if (group.attrTrackers) {
+      for (const tracker of group.attrTrackers.values()) {
+        const val = span.attributes[tracker.sourceAttribute]
+        if (val != null) {
+          tracker.values.push(val as string | number | boolean)
+        }
+      }
+    }
+
     if (group.inflight === 0) {
       this._emitAggregateSpan(key, group)
       this._aggregateGroups.delete(key)
     }
 
-    // Error spans fall through to normal export; non-error spans are consumed
-    return !isError
+    // Error spans with keepErrors fall through to normal export
+    if (isError && keepErrors) return false
+    // Everything else is consumed by aggregation
+    return true
   }
 
-  private _emitAggregateSpan(key: string, group: AggregateGroup): void {
-    // No non-error spans — nothing to aggregate (errors were exported individually)
-    if (group.nonErrorCount === 0) return
+  private _emitAggregateSpan(_key: string, group: AggregateGroup): void {
+    const keepErrors = group.config.keepErrors !== false
 
-    // Single non-error span — just export the buffered original directly
-    if (group.nonErrorCount === 1 && group.bufferedFirstNonError) {
+    // When keepErrors is true: no non-error spans means nothing to aggregate
+    // When keepErrors is false: no spans at all means nothing to aggregate
+    const totalNonDropped = keepErrors
+      ? group.nonErrorCount
+      : group.nonErrorCount + group.errorCount
+    if (totalNonDropped === 0) return
+
+    // Single non-error span with no errors — export original directly
+    if (
+      group.nonErrorCount === 1 &&
+      group.bufferedFirstNonError &&
+      group.errorCount === 0
+    ) {
       this._wrapped.onEnd(group.bufferedFirstNonError)
       return
     }
@@ -561,6 +621,81 @@ export class FilteringSpanProcessor implements SpanProcessor {
       traceFlags: templateCtx.traceFlags,
     }
 
+    const attributes: Attributes = {
+      ...template.attributes,
+      [OPIN_TEL_INTERNAL.meta.isAggregate]: true,
+      [OPIN_TEL_INTERNAL.agg.count]: group.count,
+      [OPIN_TEL_INTERNAL.agg.errorCount]: group.errorCount,
+    }
+
+    if (group.nonErrorCount > 0) {
+      attributes[OPIN_TEL_INTERNAL.agg.minDurationMs] = Math.round(
+        group.minDurationMs,
+      )
+      attributes[OPIN_TEL_INTERNAL.agg.maxDurationMs] = Math.round(
+        group.maxDurationMs,
+      )
+      attributes[OPIN_TEL_INTERNAL.agg.avgDurationMs] = Math.round(
+        group.totalDurationMs / group.nonErrorCount,
+      )
+      attributes[OPIN_TEL_INTERNAL.agg.totalDurationMs] = Math.round(
+        group.totalDurationMs,
+      )
+    }
+
+    // Compute custom attribute stats
+    if (group.attrTrackers) {
+      for (const [outputKey, tracker] of group.attrTrackers) {
+        const prefix = `opin_tel.agg.${outputKey}`
+        const nums = tracker.values.filter(
+          (v) => typeof v === 'number',
+        ) as number[]
+
+        for (const opt of tracker.options) {
+          switch (opt) {
+            case 'uniq': {
+              const uniq = [...new Set(tracker.values.map(String))]
+              attributes[`${prefix}.uniq`] = uniq
+              break
+            }
+            case 'count':
+              attributes[`${prefix}.count`] = tracker.values.length
+              break
+            case 'sum':
+              if (nums.length)
+                attributes[`${prefix}.sum`] = nums.reduce((a, b) => a + b, 0)
+              break
+            case 'min':
+              if (nums.length) attributes[`${prefix}.min`] = Math.min(...nums)
+              break
+            case 'max':
+              if (nums.length) attributes[`${prefix}.max`] = Math.max(...nums)
+              break
+            case 'range':
+              if (nums.length)
+                attributes[`${prefix}.range`] =
+                  Math.max(...nums) - Math.min(...nums)
+              break
+            case 'avg':
+              if (nums.length)
+                attributes[`${prefix}.avg`] =
+                  nums.reduce((a, b) => a + b, 0) / nums.length
+              break
+            case 'median':
+              if (nums.length) {
+                const sorted = [...nums].sort((a, b) => a - b)
+                const mid = Math.floor(sorted.length / 2)
+                attributes[`${prefix}.median`] =
+                  sorted.length % 2
+                    ? sorted[mid]!
+                    : (sorted[mid - 1]! + sorted[mid]!) / 2
+              }
+              break
+          }
+        }
+      }
+    }
+
     const aggregateSpan = new SpanImpl({
       resource: template.resource,
       scope: template.instrumentationScope,
@@ -571,23 +706,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       parentSpanContext: template.parentSpanContext,
       links: [],
       startTime: group.earliestStart,
-      attributes: {
-        ...template.attributes,
-        [OPIN_TEL_INTERNAL.aggregate.count]: group.count,
-        [OPIN_TEL_INTERNAL.aggregate.errorCount]: group.errorCount,
-        [OPIN_TEL_INTERNAL.aggregate.minDurationMs]: Math.round(
-          group.minDurationMs,
-        ),
-        [OPIN_TEL_INTERNAL.aggregate.maxDurationMs]: Math.round(
-          group.maxDurationMs,
-        ),
-        [OPIN_TEL_INTERNAL.aggregate.avgDurationMs]: Math.round(
-          group.totalDurationMs / group.nonErrorCount,
-        ),
-        [OPIN_TEL_INTERNAL.aggregate.totalDurationMs]: Math.round(
-          group.totalDurationMs,
-        ),
-      },
+      attributes,
       spanLimits: (template as any)._spanLimits,
       spanProcessor: this._wrapped,
     })

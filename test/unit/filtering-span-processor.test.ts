@@ -1691,14 +1691,13 @@ describe('FilteringSpanProcessor', () => {
       // Should be 1 aggregate span, not 5
       expect(s3Spans).toHaveLength(1)
       const agg = s3Spans[0]!
-      expect(agg.attributes['opin_tel.aggregate.count']).toBe(5)
-      expect(agg.attributes['opin_tel.aggregate.error_count']).toBe(0)
-      expect(agg.attributes['opin_tel.aggregate.min_duration_ms']).toBeDefined()
-      expect(agg.attributes['opin_tel.aggregate.max_duration_ms']).toBeDefined()
-      expect(agg.attributes['opin_tel.aggregate.avg_duration_ms']).toBeDefined()
-      expect(
-        agg.attributes['opin_tel.aggregate.total_duration_ms'],
-      ).toBeDefined()
+      expect(agg.attributes['opin_tel.meta.is_aggregate']).toBe(true)
+      expect(agg.attributes['opin_tel.agg.count']).toBe(5)
+      expect(agg.attributes['opin_tel.agg.error_count']).toBe(0)
+      expect(agg.attributes['opin_tel.agg.min_duration_ms']).toBeDefined()
+      expect(agg.attributes['opin_tel.agg.max_duration_ms']).toBeDefined()
+      expect(agg.attributes['opin_tel.agg.avg_duration_ms']).toBeDefined()
+      expect(agg.attributes['opin_tel.agg.total_duration_ms']).toBeDefined()
       // Aggregate should have same parent as the children
       expect(agg.parentSpanContext?.spanId).toBe(root.spanContext().spanId)
       // Aggregate should have same traceId
@@ -1741,11 +1740,11 @@ describe('FilteringSpanProcessor', () => {
       expect(errorSpan!.status.message).toBe('timeout')
 
       const agg = dbSpans.find(
-        (s) => s.attributes['opin_tel.aggregate.count'] !== undefined,
+        (s) => s.attributes['opin_tel.agg.count'] !== undefined,
       )
       expect(agg).toBeDefined()
-      expect(agg!.attributes['opin_tel.aggregate.count']).toBe(3)
-      expect(agg!.attributes['opin_tel.aggregate.error_count']).toBe(1)
+      expect(agg!.attributes['opin_tel.agg.count']).toBe(3)
+      expect(agg!.attributes['opin_tel.agg.error_count']).toBe(1)
     })
 
     it('exports single non-error span as-is without aggregate wrapper', async () => {
@@ -1769,9 +1768,7 @@ describe('FilteringSpanProcessor', () => {
 
       // Single span — no aggregate, just the original
       expect(cacheSpans).toHaveLength(1)
-      expect(
-        cacheSpans[0]!.attributes['opin_tel.aggregate.count'],
-      ).toBeUndefined()
+      expect(cacheSpans[0]!.attributes['opin_tel.agg.count']).toBeUndefined()
       expect(cacheSpans[0]!.attributes['cache.key']).toBe('user:1')
     })
 
@@ -1803,7 +1800,7 @@ describe('FilteringSpanProcessor', () => {
       expect(rpcSpans).toHaveLength(2)
       rpcSpans.forEach((s) => {
         expect(s.status.code).toBe(SpanStatusCode.ERROR)
-        expect(s.attributes['opin_tel.aggregate.count']).toBeUndefined()
+        expect(s.attributes['opin_tel.agg.count']).toBeUndefined()
       })
     })
 
@@ -1850,7 +1847,7 @@ describe('FilteringSpanProcessor', () => {
       const dlSpans = spans.filter((s) => s.name === 'dataloader.load')
 
       expect(dlSpans).toHaveLength(1)
-      expect(dlSpans[0]!.attributes['opin_tel.aggregate.count']).toBe(3)
+      expect(dlSpans[0]!.attributes['opin_tel.agg.count']).toBe(3)
     })
 
     it('root spans never aggregate even if predicate matches', async () => {
@@ -1870,7 +1867,7 @@ describe('FilteringSpanProcessor', () => {
       // Both root spans should be exported individually
       expect(spans.filter((s) => s.name === 'handler')).toHaveLength(2)
       spans.forEach((s) => {
-        expect(s.attributes['opin_tel.aggregate.count']).toBeUndefined()
+        expect(s.attributes['opin_tel.agg.count']).toBeUndefined()
       })
     })
 
@@ -1895,23 +1892,15 @@ describe('FilteringSpanProcessor', () => {
 
       const spans = getSpans()
       const agg = spans.find(
-        (s) => s.attributes['opin_tel.aggregate.count'] !== undefined,
+        (s) => s.attributes['opin_tel.agg.count'] !== undefined,
       )
       expect(agg).toBeDefined()
 
       // Duration stats should be non-negative numbers
-      const minD = agg!.attributes[
-        'opin_tel.aggregate.min_duration_ms'
-      ] as number
-      const maxD = agg!.attributes[
-        'opin_tel.aggregate.max_duration_ms'
-      ] as number
-      const avgD = agg!.attributes[
-        'opin_tel.aggregate.avg_duration_ms'
-      ] as number
-      const totalD = agg!.attributes[
-        'opin_tel.aggregate.total_duration_ms'
-      ] as number
+      const minD = agg!.attributes['opin_tel.agg.min_duration_ms'] as number
+      const maxD = agg!.attributes['opin_tel.agg.max_duration_ms'] as number
+      const avgD = agg!.attributes['opin_tel.agg.avg_duration_ms'] as number
+      const totalD = agg!.attributes['opin_tel.agg.total_duration_ms'] as number
 
       expect(minD).toBeGreaterThanOrEqual(0)
       expect(maxD).toBeGreaterThanOrEqual(minD)
@@ -1953,12 +1942,10 @@ describe('FilteringSpanProcessor', () => {
       const aggCall = emittedCalls.find(
         ([s]: any) =>
           s.name === 'batch' &&
-          s.attributes?.['opin_tel.aggregate.count'] !== undefined,
+          s.attributes?.['opin_tel.agg.count'] !== undefined,
       )
       expect(aggCall).toBeDefined()
-      expect((aggCall![0] as any).attributes['opin_tel.aggregate.count']).toBe(
-        2,
-      )
+      expect((aggCall![0] as any).attributes['opin_tel.agg.count']).toBe(2)
     })
 
     it('separate batches under same parent create separate aggregates', async () => {
@@ -1991,14 +1978,12 @@ describe('FilteringSpanProcessor', () => {
 
       const spans = getSpans()
       const s3Spans = spans.filter(
-        (s) => s.attributes['opin_tel.aggregate.count'] !== undefined,
+        (s) => s.attributes['opin_tel.agg.count'] !== undefined,
       )
 
       // Two separate aggregate spans
       expect(s3Spans).toHaveLength(2)
-      const counts = s3Spans.map(
-        (s) => s.attributes['opin_tel.aggregate.count'],
-      )
+      const counts = s3Spans.map((s) => s.attributes['opin_tel.agg.count'])
       expect(counts).toContain(2)
       expect(counts).toContain(3)
     })
@@ -2031,9 +2016,260 @@ describe('FilteringSpanProcessor', () => {
       expect(spans.filter((s) => s.name === 'db.query')).toHaveLength(1)
       expect(
         spans.find((s) => s.name === 'db.query')!.attributes[
-          'opin_tel.aggregate.count'
+          'opin_tel.agg.count'
         ],
       ).toBeUndefined()
+    })
+
+    it('computes custom attribute stats with uniq option', async () => {
+      const { tracer, getSpans, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        aggregateSpan: (span) => {
+          if (span.name !== 'redis.cmd') return false
+          return {
+            attributes: {
+              all_commands: {
+                attribute: 'db.statement',
+                options: 'uniq',
+              },
+            },
+          }
+        },
+      })
+
+      const root = tracer.startSpan('handler')
+      const ctx = trace.setSpan(context.active(), root)
+
+      const c1 = tracer.startSpan('redis.cmd', {}, ctx)
+      c1.setAttribute('db.statement', 'GET user:1')
+      const c2 = tracer.startSpan('redis.cmd', {}, ctx)
+      c2.setAttribute('db.statement', 'GET user:2')
+      const c3 = tracer.startSpan('redis.cmd', {}, ctx)
+      c3.setAttribute('db.statement', 'GET user:1') // duplicate
+      c1.end()
+      c2.end()
+      c3.end()
+
+      root.end()
+      await shutdown()
+
+      const agg = getSpans().find(
+        (s) => s.attributes['opin_tel.meta.is_aggregate'],
+      )
+      expect(agg).toBeDefined()
+      expect(agg!.attributes['opin_tel.agg.count']).toBe(3)
+
+      const uniq = agg!.attributes['opin_tel.agg.all_commands.uniq'] as string[]
+      expect(uniq).toHaveLength(2)
+      expect(uniq).toContain('GET user:1')
+      expect(uniq).toContain('GET user:2')
+    })
+
+    it('computes numeric attribute stats (min, max, avg, sum, range, median)', async () => {
+      const { tracer, getSpans, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        aggregateSpan: (span) => {
+          if (span.name !== 'redis.cmd') return false
+          return {
+            attributes: {
+              response_bytes: {
+                attribute: 'redis.response_size_bytes',
+                options: ['min', 'max', 'avg', 'sum', 'range', 'median'],
+              },
+            },
+          }
+        },
+      })
+
+      const root = tracer.startSpan('handler')
+      const ctx = trace.setSpan(context.active(), root)
+
+      const c1 = tracer.startSpan('redis.cmd', {}, ctx)
+      c1.setAttribute('redis.response_size_bytes', 100)
+      const c2 = tracer.startSpan('redis.cmd', {}, ctx)
+      c2.setAttribute('redis.response_size_bytes', 200)
+      const c3 = tracer.startSpan('redis.cmd', {}, ctx)
+      c3.setAttribute('redis.response_size_bytes', 300)
+      c1.end()
+      c2.end()
+      c3.end()
+
+      root.end()
+      await shutdown()
+
+      const agg = getSpans().find(
+        (s) => s.attributes['opin_tel.meta.is_aggregate'],
+      )
+      expect(agg).toBeDefined()
+      expect(agg!.attributes['opin_tel.agg.response_bytes.min']).toBe(100)
+      expect(agg!.attributes['opin_tel.agg.response_bytes.max']).toBe(300)
+      expect(agg!.attributes['opin_tel.agg.response_bytes.avg']).toBe(200)
+      expect(agg!.attributes['opin_tel.agg.response_bytes.sum']).toBe(600)
+      expect(agg!.attributes['opin_tel.agg.response_bytes.range']).toBe(200)
+      expect(agg!.attributes['opin_tel.agg.response_bytes.median']).toBe(200)
+    })
+
+    it('computes count option for attribute frequency', async () => {
+      const { tracer, getSpans, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        aggregateSpan: (span) => {
+          if (span.name !== 'fetch') return false
+          return {
+            attributes: {
+              status: {
+                attribute: 'http.status_code',
+                options: 'count',
+              },
+            },
+          }
+        },
+      })
+
+      const root = tracer.startSpan('handler')
+      const ctx = trace.setSpan(context.active(), root)
+
+      const c1 = tracer.startSpan('fetch', {}, ctx)
+      c1.setAttribute('http.status_code', 200)
+      const c2 = tracer.startSpan('fetch', {}, ctx)
+      c2.setAttribute('http.status_code', 200)
+      const c3 = tracer.startSpan('fetch', {}, ctx)
+      // c3 has no http.status_code
+      c1.end()
+      c2.end()
+      c3.end()
+
+      root.end()
+      await shutdown()
+
+      const agg = getSpans().find(
+        (s) => s.attributes['opin_tel.meta.is_aggregate'],
+      )
+      expect(agg).toBeDefined()
+      // Only 2 of 3 spans had the attribute
+      expect(agg!.attributes['opin_tel.agg.status.count']).toBe(2)
+    })
+
+    it('per-scope aggregate config with attributes', async () => {
+      const mockInstrumentation = {
+        instrumentationName: 'test-redis',
+        instrumentationVersion: '1.0.0',
+        enable: () => {},
+        disable: () => {},
+        setTracerProvider: () => {},
+        setMeterProvider: () => {},
+        getModuleDefinitions: () => [],
+        setConfig: () => {},
+        getConfig: () => ({}),
+      }
+
+      new OpinionatedInstrumentation(mockInstrumentation as any, {
+        aggregate: {
+          attributes: {
+            sizes: {
+              attribute: 'redis.response_size_bytes',
+              options: ['min', 'max'],
+            },
+          },
+        },
+      })
+
+      const { provider, getSpans, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+      })
+
+      const tracer = provider.getTracer('test-redis')
+      const rootTracer = provider.getTracer('test')
+
+      const root = rootTracer.startSpan('handler')
+      const ctx = trace.setSpan(context.active(), root)
+
+      const c1 = tracer.startSpan('redis.get', {}, ctx)
+      c1.setAttribute('redis.response_size_bytes', 50)
+      const c2 = tracer.startSpan('redis.get', {}, ctx)
+      c2.setAttribute('redis.response_size_bytes', 150)
+      c1.end()
+      c2.end()
+
+      root.end()
+      await shutdown()
+
+      const agg = getSpans().find(
+        (s) => s.attributes['opin_tel.meta.is_aggregate'],
+      )
+      expect(agg).toBeDefined()
+      expect(agg!.attributes['opin_tel.agg.sizes.min']).toBe(50)
+      expect(agg!.attributes['opin_tel.agg.sizes.max']).toBe(150)
+    })
+
+    it('keepErrors: false consumes error spans into the aggregate', async () => {
+      const { tracer, getSpans, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        aggregateSpan: (span) => {
+          if (span.name !== 'rpc.call') return false
+          return { keepErrors: false }
+        },
+      })
+
+      const root = tracer.startSpan('handler')
+      const ctx = trace.setSpan(context.active(), root)
+
+      const ok = tracer.startSpan('rpc.call', {}, ctx)
+      const err = tracer.startSpan('rpc.call', {}, ctx)
+      err.setStatus({ code: SpanStatusCode.ERROR })
+      ok.end()
+      err.end()
+
+      root.end()
+      await shutdown()
+
+      const spans = getSpans()
+      const rpcSpans = spans.filter((s) => s.name === 'rpc.call')
+
+      // Both consumed into aggregate, no individual error span
+      expect(rpcSpans).toHaveLength(1)
+      expect(rpcSpans[0]!.attributes['opin_tel.meta.is_aggregate']).toBe(true)
+      expect(rpcSpans[0]!.attributes['opin_tel.agg.count']).toBe(2)
+      expect(rpcSpans[0]!.attributes['opin_tel.agg.error_count']).toBe(1)
+    })
+
+    it('median with even number of values takes average of two middle', async () => {
+      const { tracer, getSpans, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        aggregateSpan: (span) => {
+          if (span.name !== 'op') return false
+          return {
+            attributes: {
+              val: { attribute: 'x', options: 'median' },
+            },
+          }
+        },
+      })
+
+      const root = tracer.startSpan('handler')
+      const ctx = trace.setSpan(context.active(), root)
+
+      const c1 = tracer.startSpan('op', {}, ctx)
+      c1.setAttribute('x', 10)
+      const c2 = tracer.startSpan('op', {}, ctx)
+      c2.setAttribute('x', 20)
+      const c3 = tracer.startSpan('op', {}, ctx)
+      c3.setAttribute('x', 30)
+      const c4 = tracer.startSpan('op', {}, ctx)
+      c4.setAttribute('x', 40)
+      c1.end()
+      c2.end()
+      c3.end()
+      c4.end()
+
+      root.end()
+      await shutdown()
+
+      const agg = getSpans().find(
+        (s) => s.attributes['opin_tel.meta.is_aggregate'],
+      )
+      expect(agg).toBeDefined()
+      // median of [10, 20, 30, 40] = (20 + 30) / 2 = 25
+      expect(agg!.attributes['opin_tel.agg.val.median']).toBe(25)
     })
   })
 })
