@@ -1,0 +1,13 @@
+#!/bin/sh
+
+# Get staged files matching prettier patterns
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=d -- '*.ts' '*.md' '*.json')
+
+if [ -n "$STAGED_FILES" ]; then
+  echo "Formatting staged files..."
+  echo "$STAGED_FILES" | xargs npx prettier --write
+  echo "$STAGED_FILES" | xargs git add
+fi
+
+echo "Running dependency lint..."
+npm run lint:deps || exit 1

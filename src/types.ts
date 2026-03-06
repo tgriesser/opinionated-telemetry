@@ -69,8 +69,7 @@ export interface SamplingConfig {
   burstProtection?: BurstProtectionConfig
 }
 
-export interface OpinionatedTelemetryConfig
-  extends FilteringSpanProcessorConfig {
+export interface OpinionatedTelemetryConfig extends FilteringSpanProcessorConfig {
   serviceName: string
   resourceAttributes?: Record<string, string>
   traceExporter: SpanExporter

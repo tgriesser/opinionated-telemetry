@@ -21,7 +21,7 @@ const TICK_KEY = '__tick'
 const MEMORY_KEY = '__memStart'
 const ELU_KEY = '__eluStart'
 
-export type MemoryKey = keyof NodeJS.MemoryUsage
+type MemoryKey = keyof NodeJS.MemoryUsage
 
 export interface MemoryConfig {
   /** Capture rss */

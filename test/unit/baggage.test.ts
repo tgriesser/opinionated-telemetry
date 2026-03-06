@@ -26,15 +26,12 @@ describe('baggage', () => {
     })
 
     it('skips null and undefined values', () => {
-      withBaggage(
-        { keep: 'yes', skip: null, also_skip: undefined },
-        () => {
-          const baggage = propagation.getActiveBaggage()
-          expect(baggage!.getEntry('keep')?.value).toBe('yes')
-          expect(baggage!.getEntry('skip')).toBeUndefined()
-          expect(baggage!.getEntry('also_skip')).toBeUndefined()
-        },
-      )
+      withBaggage({ keep: 'yes', skip: null, also_skip: undefined }, () => {
+        const baggage = propagation.getActiveBaggage()
+        expect(baggage!.getEntry('keep')?.value).toBe('yes')
+        expect(baggage!.getEntry('skip')).toBeUndefined()
+        expect(baggage!.getEntry('also_skip')).toBeUndefined()
+      })
     })
 
     it('merges with existing baggage in active context', () => {

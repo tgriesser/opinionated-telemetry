@@ -47,6 +47,7 @@
     "format": "prettier --write '**/*.{ts,md,json}'",
     "format:check": "prettier --check '**/*.{ts,md,json}'",
     "lint:deps": "knip",
+    "prepare": "git config core.hooksPath .githooks",
     "test": "vitest run",
     "test:watch": "vitest"
   },
