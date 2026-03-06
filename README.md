@@ -21,6 +21,7 @@ Best suited for & meant use with [Honeycomb.io](https://www.honeycomb.io/). Virt
 - **Auto-instrumentation**: [opt-in hooks](#auto-instrumentation) wraps exported async functions from your own codebase with auto-spans based on the function or method name, configured via `ESM` or `Module._load` patching
 - **Head & Tail Based Sampling**: Includes sensible approaches to dealing with Head & Tail based sampling out of the box
 - **Burst Protection**: Along with the sampling, includes some conventions for preventing a simple coding mistake that generates an infinite loop spawning thousands of spans per second from doing too much damage.
+- **Span aggregation**: collapses N parallel sibling spans with the same name (dataloader batches, S3 multi-get, parallel DB queries) into a single aggregate span with summary statistics, while preserving individual error spans. Configurable via per-scope options or a root-level predicate, with optional custom attribute stats (min, max, avg, median, uniq, etc.)
 - **Integration helpers**: knex, graphql, bull, socket.io, express
 - **Event loop utilization**: captures event loop utilization (0-1) on all spans. Useful for alerting on situation where expensive spans are blocking the event loop. Particularly useful when dealing with things that are synchronous, like `fs` calls or `better-sqlite3` queries
 
@@ -82,6 +83,7 @@ opinionatedTelemetryInit({
   stuckSpanDetection?: boolean | StuckSpanConfig,    // default: true
   onSpanAfterShutdown?: (span) => void,              // default: debug log
   shutdownSignal?: string,                           // default: 'SIGTERM'
+  aggregateSpan?: (span) => boolean | AggregateConfig, // default: undefined
   instrumentations: Array<Instrumentation | OpinionatedInstrumentation>,
   additionalSpanProcessors?: SpanProcessor[],
 })
@@ -121,6 +123,90 @@ stuckSpanDetection: {
 
 Stuck span snapshots are exported with the original span's trace/span IDs, an `(incomplete)` name suffix, and attributes `opin_tel.stuck.duration_ms` and `opin_tel.stuck.is_snapshot`. They also receive memory delta, ELU, and instrumentation hook enrichment.
 
+### Span Aggregation
+
+When a parent span fires off many parallel child spans with the same name (dataloader batches, S3 multi-get, parallel DB queries), the result is N nearly-identical sibling spans that add volume without proportional signal. Span aggregation collapses them into a single aggregate span with summary statistics.
+
+**How it works:** Spans are grouped by `${parentSpanId}:${spanName}`. The group tracks in-flight count; when it drops to zero, the batch is complete and an aggregate span is emitted. If the same parent later starts another batch with the same name, it's a new group.
+
+**Error handling:** By default, error spans are exported individually (full attributes, events, stack trace preserved) and counted in `opin_tel.agg.error_count`. Set `keepErrors: false` to consume error spans into the aggregate instead.
+
+**Single-span optimization:** If only one non-error span arrives in a group (and no errors), it's exported as-is — no aggregate wrapper.
+
+#### Root-level predicate
+
+```ts
+opinionatedTelemetryInit({
+  // Return true for default aggregation, or an AggregateConfig for custom stats
+  aggregateSpan: (span) => {
+    if (span.name.startsWith('S3.')) return true
+    if (span.name === 'redis.cmd')
+      return {
+        attributes: {
+          response_bytes: {
+            attribute: 'redis.response_size_bytes',
+            options: ['min', 'max', 'avg'],
+          },
+          all_statements: {
+            attribute: 'db.statement',
+            options: 'uniq',
+          },
+        },
+      }
+    return false
+  },
+})
+```
+
+#### Per-instrumentation
+
+```ts
+new OpinionatedInstrumentation(new DataloaderInstrumentation(), {
+  aggregate: true,
+})
+
+// Or with custom attribute stats:
+new OpinionatedInstrumentation(new RedisInstrumentation(), {
+  aggregate: {
+    keepErrors: false,
+    attributes: {
+      sizes: {
+        attribute: 'redis.response_size_bytes',
+        options: ['min', 'max', 'range'],
+      },
+    },
+  },
+})
+```
+
+#### Aggregate span attributes
+
+Every aggregate span has `opin_tel.meta.is_aggregate = true` and the following built-in stats:
+
+| Attribute                        | Description                                 |
+| -------------------------------- | ------------------------------------------- |
+| `opin_tel.agg.count`             | Total spans in the group (including errors) |
+| `opin_tel.agg.error_count`       | Number of spans with ERROR status           |
+| `opin_tel.agg.min_duration_ms`   | Shortest non-error span duration            |
+| `opin_tel.agg.max_duration_ms`   | Longest non-error span duration             |
+| `opin_tel.agg.avg_duration_ms`   | Mean non-error span duration                |
+| `opin_tel.agg.total_duration_ms` | Sum of non-error span durations             |
+
+#### Custom attribute stat options
+
+When you configure `attributes`, each entry maps an output key to a source attribute and one or more stat options. Stats are emitted as `opin_tel.agg.{outputKey}.{stat}`.
+
+| Option   | Input type | Description                                           |
+| -------- | ---------- | ----------------------------------------------------- |
+| `uniq`   | any        | Array of unique values (converted to strings)         |
+| `count`  | any        | Number of spans that had this attribute               |
+| `sum`    | numeric    | Sum of values                                         |
+| `min`    | numeric    | Minimum value                                         |
+| `max`    | numeric    | Maximum value                                         |
+| `range`  | numeric    | max - min                                             |
+| `avg`    | numeric    | Mean value                                            |
+| `median` | numeric    | Median (average of two middle values for even counts) |
+
 ### `OpinionatedInstrumentation`
 
 Wraps an OTel instrumentation with opinionated behavior.
@@ -131,11 +217,12 @@ new OpinionatedInstrumentation(instrumentationInstance, opinionatedOptions?)
 
 Options:
 
-- `reparent` -- drop this span, merge attrs into children, reparent children to grandparent
-- `renameSpan(span)` -- rename in onStart
-- `renameSpanOnEnd(span)` -- rename in onEnd
-- `onStart(span)` -- custom onStart hook
-- `onEnd(span)` -- custom onEnd hook
+- `reparent`: drop this span, merge attrs into children, reparent children to grandparent
+- `aggregate`: `true` or an `AggregateConfig` to collapse parallel sibling spans into a single aggregate
+- `renameSpan(span)`: rename in onStart
+- `renameSpanOnEnd(span)`: rename in onEnd
+- `onStart(span)`: custom onStart hook
+- `onEnd(span)`: custom onEnd hook
 
 ### `FilteringSpanProcessor`
 

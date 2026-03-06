@@ -20,7 +20,7 @@ import type { AggregateConfig, SamplingConfig } from './types.js'
 // Pinned to @opentelemetry/sdk-trace-base v2.x. If the SDK restructures its
 // build output, this import will fail at startup (not silently).
 import { SpanImpl } from '@opentelemetry/sdk-trace-base/build/src/Span.js'
-import { OPIN_TEL_INTERNAL } from './constants.js'
+import { OPIN_TEL_INTERNAL, OPIN_TEL_PREFIX } from './constants.js'
 
 const debug = debugLib('opin_tel:filtering-processor')
 const TICK_KEY = '__tick'
@@ -646,7 +646,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     // Compute custom attribute stats
     if (group.attrTrackers) {
       for (const [outputKey, tracker] of group.attrTrackers) {
-        const prefix = `opin_tel.agg.${outputKey}`
+        const prefix = `${OPIN_TEL_PREFIX}agg.${outputKey}`
         const nums = tracker.values.filter(
           (v) => typeof v === 'number',
         ) as number[]
