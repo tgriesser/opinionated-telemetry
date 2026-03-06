@@ -17,6 +17,8 @@ export const OPIN_TEL_INTERNAL = {
     utilization: 'opin_tel.event_loop.utilization',
   },
   meta: {
+    activeSpans: 'open_tel.meta.active_spans',
+    activeRootSpans: 'open_tel.meta.active_root_spans',
     incompleteTrace: 'opin_tel.meta.incomplete_trace',
   },
   stuck: {
@@ -26,5 +28,13 @@ export const OPIN_TEL_INTERNAL = {
   code: {
     function: 'opin_tel.code.function',
     filename: 'opin_tel.code.filename',
+  },
+  aggregate: {
+    count: 'opin_tel.aggregate.count',
+    errorCount: 'opin_tel.aggregate.error_count',
+    minDurationMs: 'opin_tel.aggregate.min_duration_ms',
+    maxDurationMs: 'opin_tel.aggregate.max_duration_ms',
+    avgDurationMs: 'opin_tel.aggregate.avg_duration_ms',
+    totalDurationMs: 'opin_tel.aggregate.total_duration_ms',
   },
 } as const

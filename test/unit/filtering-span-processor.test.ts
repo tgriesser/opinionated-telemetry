@@ -1665,4 +1665,375 @@ describe('FilteringSpanProcessor', () => {
       expect((processor as any)._samplingEvictionInterval).toBeNull()
     })
   })
+
+  describe('span aggregation', () => {
+    it('aggregates multiple parallel spans with the same name under one parent', async () => {
+      const { tracer, getSpans, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        aggregateSpan: (span) => span.name === 'S3.GetObject',
+      })
+
+      const root = tracer.startSpan('handler')
+      const ctx = trace.setSpan(context.active(), root)
+
+      // Start 5 parallel child spans
+      const children = Array.from({ length: 5 }, () =>
+        tracer.startSpan('S3.GetObject', {}, ctx),
+      )
+      children.forEach((c) => c.end())
+      root.end()
+
+      await shutdown()
+
+      const spans = getSpans()
+      const s3Spans = spans.filter((s) => s.name === 'S3.GetObject')
+
+      // Should be 1 aggregate span, not 5
+      expect(s3Spans).toHaveLength(1)
+      const agg = s3Spans[0]!
+      expect(agg.attributes['opin_tel.aggregate.count']).toBe(5)
+      expect(agg.attributes['opin_tel.aggregate.error_count']).toBe(0)
+      expect(agg.attributes['opin_tel.aggregate.min_duration_ms']).toBeDefined()
+      expect(agg.attributes['opin_tel.aggregate.max_duration_ms']).toBeDefined()
+      expect(agg.attributes['opin_tel.aggregate.avg_duration_ms']).toBeDefined()
+      expect(
+        agg.attributes['opin_tel.aggregate.total_duration_ms'],
+      ).toBeDefined()
+      // Aggregate should have same parent as the children
+      expect(agg.parentSpanContext?.spanId).toBe(root.spanContext().spanId)
+      // Aggregate should have same traceId
+      expect(agg.spanContext().traceId).toBe(root.spanContext().traceId)
+    })
+
+    it('exports error spans individually and counts them in aggregate', async () => {
+      const { tracer, getSpans, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        aggregateSpan: (span) => span.name === 'db.query',
+      })
+
+      const root = tracer.startSpan('handler')
+      const ctx = trace.setSpan(context.active(), root)
+
+      // Start all spans before ending any (parallel pattern)
+      const ok1 = tracer.startSpan('db.query', {}, ctx)
+      const err1 = tracer.startSpan('db.query', {}, ctx)
+      const ok2 = tracer.startSpan('db.query', {}, ctx)
+
+      ok1.end()
+      err1.setStatus({ code: SpanStatusCode.ERROR, message: 'timeout' })
+      err1.end()
+      ok2.end()
+
+      root.end()
+
+      await shutdown()
+
+      const spans = getSpans()
+      const dbSpans = spans.filter((s) => s.name === 'db.query')
+
+      // 1 aggregate + 1 error span exported individually
+      expect(dbSpans).toHaveLength(2)
+
+      const errorSpan = dbSpans.find(
+        (s) => s.status.code === SpanStatusCode.ERROR,
+      )
+      expect(errorSpan).toBeDefined()
+      expect(errorSpan!.status.message).toBe('timeout')
+
+      const agg = dbSpans.find(
+        (s) => s.attributes['opin_tel.aggregate.count'] !== undefined,
+      )
+      expect(agg).toBeDefined()
+      expect(agg!.attributes['opin_tel.aggregate.count']).toBe(3)
+      expect(agg!.attributes['opin_tel.aggregate.error_count']).toBe(1)
+    })
+
+    it('exports single non-error span as-is without aggregate wrapper', async () => {
+      const { tracer, getSpans, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        aggregateSpan: (span) => span.name === 'cache.get',
+      })
+
+      const root = tracer.startSpan('handler')
+      const ctx = trace.setSpan(context.active(), root)
+
+      const child = tracer.startSpan('cache.get', {}, ctx)
+      child.setAttribute('cache.key', 'user:1')
+      child.end()
+      root.end()
+
+      await shutdown()
+
+      const spans = getSpans()
+      const cacheSpans = spans.filter((s) => s.name === 'cache.get')
+
+      // Single span — no aggregate, just the original
+      expect(cacheSpans).toHaveLength(1)
+      expect(
+        cacheSpans[0]!.attributes['opin_tel.aggregate.count'],
+      ).toBeUndefined()
+      expect(cacheSpans[0]!.attributes['cache.key']).toBe('user:1')
+    })
+
+    it('does not emit aggregate when all spans are errors', async () => {
+      const { tracer, getSpans, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        aggregateSpan: (span) => span.name === 'rpc.call',
+      })
+
+      const root = tracer.startSpan('handler')
+      const ctx = trace.setSpan(context.active(), root)
+
+      const e1 = tracer.startSpan('rpc.call', {}, ctx)
+      e1.setStatus({ code: SpanStatusCode.ERROR })
+      e1.end()
+
+      const e2 = tracer.startSpan('rpc.call', {}, ctx)
+      e2.setStatus({ code: SpanStatusCode.ERROR })
+      e2.end()
+
+      root.end()
+
+      await shutdown()
+
+      const spans = getSpans()
+      const rpcSpans = spans.filter((s) => s.name === 'rpc.call')
+
+      // Both error spans exported individually, no aggregate
+      expect(rpcSpans).toHaveLength(2)
+      rpcSpans.forEach((s) => {
+        expect(s.status.code).toBe(SpanStatusCode.ERROR)
+        expect(s.attributes['opin_tel.aggregate.count']).toBeUndefined()
+      })
+    })
+
+    it('works with per-instrumentation aggregate: true option', async () => {
+      const mockInstrumentation = {
+        instrumentationName: 'test-dataloader',
+        instrumentationVersion: '1.0.0',
+        enable: () => {},
+        disable: () => {},
+        setTracerProvider: () => {},
+        setMeterProvider: () => {},
+        getModuleDefinitions: () => [],
+        setConfig: () => {},
+        getConfig: () => ({}),
+      }
+
+      new OpinionatedInstrumentation(mockInstrumentation as any, {
+        aggregate: true,
+      })
+
+      const { provider, getSpans, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+      })
+
+      const tracer = provider.getTracer('test-dataloader')
+      const rootTracer = provider.getTracer('test')
+
+      const root = rootTracer.startSpan('handler')
+      const ctx = trace.setSpan(context.active(), root)
+
+      // Start all spans before ending (parallel)
+      const c1 = tracer.startSpan('dataloader.load', {}, ctx)
+      const c2 = tracer.startSpan('dataloader.load', {}, ctx)
+      const c3 = tracer.startSpan('dataloader.load', {}, ctx)
+      c1.end()
+      c2.end()
+      c3.end()
+
+      root.end()
+
+      await shutdown()
+
+      const spans = getSpans()
+      const dlSpans = spans.filter((s) => s.name === 'dataloader.load')
+
+      expect(dlSpans).toHaveLength(1)
+      expect(dlSpans[0]!.attributes['opin_tel.aggregate.count']).toBe(3)
+    })
+
+    it('root spans never aggregate even if predicate matches', async () => {
+      const { tracer, getSpans, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        aggregateSpan: () => true,
+      })
+
+      const r1 = tracer.startSpan('handler')
+      r1.end()
+      const r2 = tracer.startSpan('handler')
+      r2.end()
+
+      await shutdown()
+
+      const spans = getSpans()
+      // Both root spans should be exported individually
+      expect(spans.filter((s) => s.name === 'handler')).toHaveLength(2)
+      spans.forEach((s) => {
+        expect(s.attributes['opin_tel.aggregate.count']).toBeUndefined()
+      })
+    })
+
+    it('aggregate span has correct time bounds and duration stats', async () => {
+      const { tracer, getSpans, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        aggregateSpan: (span) => span.name === 'fetch',
+      })
+
+      const root = tracer.startSpan('handler')
+      const ctx = trace.setSpan(context.active(), root)
+
+      // Start both before ending (parallel)
+      const c1 = tracer.startSpan('fetch', {}, ctx)
+      const c2 = tracer.startSpan('fetch', {}, ctx)
+      c1.end()
+      c2.end()
+
+      root.end()
+
+      await shutdown()
+
+      const spans = getSpans()
+      const agg = spans.find(
+        (s) => s.attributes['opin_tel.aggregate.count'] !== undefined,
+      )
+      expect(agg).toBeDefined()
+
+      // Duration stats should be non-negative numbers
+      const minD = agg!.attributes[
+        'opin_tel.aggregate.min_duration_ms'
+      ] as number
+      const maxD = agg!.attributes[
+        'opin_tel.aggregate.max_duration_ms'
+      ] as number
+      const avgD = agg!.attributes[
+        'opin_tel.aggregate.avg_duration_ms'
+      ] as number
+      const totalD = agg!.attributes[
+        'opin_tel.aggregate.total_duration_ms'
+      ] as number
+
+      expect(minD).toBeGreaterThanOrEqual(0)
+      expect(maxD).toBeGreaterThanOrEqual(minD)
+      expect(avgD).toBeGreaterThanOrEqual(0)
+      expect(totalD).toBeGreaterThanOrEqual(0)
+    })
+
+    it('flushes incomplete aggregate groups on shutdown', async () => {
+      const { tracer, processor, exporter } = createTestProvider({
+        dropSyncSpans: false,
+        aggregateSpan: (span) => span.name === 'batch',
+      })
+
+      const root = tracer.startSpan('handler')
+      const ctx = trace.setSpan(context.active(), root)
+
+      // Start 3 spans but only end 2 — one still in-flight
+      const c1 = tracer.startSpan('batch', {}, ctx)
+      const c2 = tracer.startSpan('batch', {}, ctx)
+      const c3 = tracer.startSpan('batch', {}, ctx)
+      c1.end()
+      c2.end()
+      // c3 still in-flight
+
+      // Verify group exists before shutdown
+      const groups = (processor as any)._aggregateGroups as Map<string, unknown>
+      expect(groups.size).toBe(1)
+
+      // Spy on the wrapped processor to capture what shutdown emits
+      const wrappedOnEnd = vi.spyOn((processor as any)._wrapped, 'onEnd')
+
+      await processor.shutdown()
+
+      // Group should be cleared
+      expect(groups.size).toBe(0)
+
+      // Wrapped processor should have received a span with aggregate attrs
+      const emittedCalls = wrappedOnEnd.mock.calls
+      const aggCall = emittedCalls.find(
+        ([s]: any) =>
+          s.name === 'batch' &&
+          s.attributes?.['opin_tel.aggregate.count'] !== undefined,
+      )
+      expect(aggCall).toBeDefined()
+      expect((aggCall![0] as any).attributes['opin_tel.aggregate.count']).toBe(
+        2,
+      )
+    })
+
+    it('separate batches under same parent create separate aggregates', async () => {
+      const { tracer, getSpans, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        aggregateSpan: (span) => span.name === 'S3.GetObject',
+      })
+
+      const root = tracer.startSpan('handler')
+      const ctx = trace.setSpan(context.active(), root)
+
+      // First batch
+      const b1c1 = tracer.startSpan('S3.GetObject', {}, ctx)
+      const b1c2 = tracer.startSpan('S3.GetObject', {}, ctx)
+      b1c1.end()
+      b1c2.end()
+      // inflight drops to 0 → group emitted and deleted
+
+      // Second batch (new group)
+      const b2c1 = tracer.startSpan('S3.GetObject', {}, ctx)
+      const b2c2 = tracer.startSpan('S3.GetObject', {}, ctx)
+      const b2c3 = tracer.startSpan('S3.GetObject', {}, ctx)
+      b2c1.end()
+      b2c2.end()
+      b2c3.end()
+
+      root.end()
+
+      await shutdown()
+
+      const spans = getSpans()
+      const s3Spans = spans.filter(
+        (s) => s.attributes['opin_tel.aggregate.count'] !== undefined,
+      )
+
+      // Two separate aggregate spans
+      expect(s3Spans).toHaveLength(2)
+      const counts = s3Spans.map(
+        (s) => s.attributes['opin_tel.aggregate.count'],
+      )
+      expect(counts).toContain(2)
+      expect(counts).toContain(3)
+    })
+
+    it('non-matching spans are not aggregated', async () => {
+      const { tracer, getSpans, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        aggregateSpan: (span) => span.name.startsWith('S3.'),
+      })
+
+      const root = tracer.startSpan('handler')
+      const ctx = trace.setSpan(context.active(), root)
+
+      // These should aggregate
+      const s3a = tracer.startSpan('S3.GetObject', {}, ctx)
+      const s3b = tracer.startSpan('S3.GetObject', {}, ctx)
+      s3a.end()
+      s3b.end()
+
+      // This should NOT aggregate
+      const db = tracer.startSpan('db.query', {}, ctx)
+      db.end()
+
+      root.end()
+
+      await shutdown()
+
+      const spans = getSpans()
+      expect(spans.filter((s) => s.name === 'S3.GetObject')).toHaveLength(1)
+      expect(spans.filter((s) => s.name === 'db.query')).toHaveLength(1)
+      expect(
+        spans.find((s) => s.name === 'db.query')!.attributes[
+          'opin_tel.aggregate.count'
+        ],
+      ).toBeUndefined()
+    })
+  })
 })

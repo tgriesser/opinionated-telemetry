@@ -4,7 +4,13 @@ import type {
   SpanProcessor,
 } from '@opentelemetry/sdk-trace-base'
 import type { Context } from '@opentelemetry/api'
-import { ROOT_CONTEXT, propagation, SpanStatusCode } from '@opentelemetry/api'
+import {
+  ROOT_CONTEXT,
+  propagation,
+  SpanStatusCode,
+  type SpanContext,
+} from '@opentelemetry/api'
+import { randomBytes } from 'node:crypto'
 import { performance } from 'node:perf_hooks'
 import { crc32 } from 'node:zlib'
 import debugLib from 'debug'
@@ -20,6 +26,24 @@ const debug = debugLib('opin_tel:filtering-processor')
 const TICK_KEY = '__tick'
 const MEMORY_KEY = '__memStart'
 const ELU_KEY = '__eluStart'
+const AGGREGATE_KEY = '__aggregateKey'
+
+type HrTime = [number, number]
+
+interface AggregateGroup {
+  firstSpan: ReadableSpan
+  inflight: number
+  count: number
+  errorCount: number
+  earliestStart: HrTime
+  latestEnd: HrTime
+  totalDurationMs: number
+  minDurationMs: number
+  maxDurationMs: number
+  nonErrorCount: number
+  bufferedFirstNonError: ReadableSpan | null
+  createdAt: number
+}
 
 type MemoryKey = keyof NodeJS.MemoryUsage
 
@@ -81,6 +105,8 @@ export interface FilteringSpanProcessorConfig {
   stuckSpanDetection?: boolean | StuckSpanConfig
   /** Sampling configuration for head, tail, and burst protection. */
   sampling?: SamplingConfig
+  /** Predicate to determine if a span should be aggregated with siblings of the same name */
+  aggregateSpan?: (span: Span & ReadableSpan) => boolean
 }
 
 interface TailBufferEntry {
@@ -132,6 +158,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
   private _burstEma = new Map<string, EmaState>()
   private _samplingEvictionInterval: ReturnType<typeof setInterval> | null =
     null
+  private _aggregateGroups = new Map<string, AggregateGroup>()
 
   constructor(wrapped: SpanProcessor, config?: FilteringSpanProcessorConfig) {
     this._wrapped = wrapped
@@ -144,6 +171,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       eventLoopUtilization: config?.eventLoopUtilization ?? true,
       onSpanAfterShutdown: config?.onSpanAfterShutdown,
       stuckSpanDetection: config?.stuckSpanDetection ?? true,
+      aggregateSpan: config?.aggregateSpan,
     }
     const captureMemory = Boolean(
       this._config.memory || this._config.memoryDelta,
@@ -184,13 +212,17 @@ export class FilteringSpanProcessor implements SpanProcessor {
     }
     if (config?.sampling) {
       this._sampling = config.sampling
-      if (this._sampling.tail || this._sampling.burstProtection) {
-        this._samplingEvictionInterval = setInterval(
-          () => this._evictSamplingState(),
-          5_000,
-        )
-        this._samplingEvictionInterval.unref()
-      }
+    }
+    if (
+      this._sampling?.tail ||
+      this._sampling?.burstProtection ||
+      config?.aggregateSpan
+    ) {
+      this._samplingEvictionInterval = setInterval(
+        () => this._evictSamplingState(),
+        5_000,
+      )
+      this._samplingEvictionInterval.unref()
     }
   }
 
@@ -291,6 +323,31 @@ export class FilteringSpanProcessor implements SpanProcessor {
       }
     }
 
+    // Aggregate tracking for child spans
+    if (span.parentSpanContext && this._shouldAggregate(span)) {
+      const key = `${span.parentSpanContext.spanId}:${span.name}`
+      const group = this._aggregateGroups.get(key)
+      if (group) {
+        group.inflight++
+      } else {
+        this._aggregateGroups.set(key, {
+          firstSpan: span,
+          inflight: 1,
+          count: 0,
+          errorCount: 0,
+          earliestStart: [...span.startTime] as HrTime,
+          latestEnd: [0, 0],
+          totalDurationMs: 0,
+          minDurationMs: Infinity,
+          maxDurationMs: 0,
+          nonErrorCount: 0,
+          bufferedFirstNonError: null,
+          createdAt: Date.now(),
+        })
+      }
+      Object.defineProperty(span, AGGREGATE_KEY, { value: key })
+    }
+
     this._wrapped.onStart(span, ctx)
   }
 
@@ -333,6 +390,17 @@ export class FilteringSpanProcessor implements SpanProcessor {
       }
     }
 
+    // Aggregation — consume non-error spans, let error spans fall through
+    const aggregateKey = (span as any)[AGGREGATE_KEY] as string | undefined
+    if (aggregateKey) {
+      const group = this._aggregateGroups.get(aggregateKey)
+      if (group) {
+        const handled = this._handleAggregateSpan(span, group, aggregateKey)
+        if (handled) return // non-error span consumed by aggregation
+        // error span falls through to normal export path
+      }
+    }
+
     if (this._didShutdown) {
       this._onSpanAfterShutdown(span as Span & ReadableSpan)
       return
@@ -364,6 +432,12 @@ export class FilteringSpanProcessor implements SpanProcessor {
       clearInterval(this._samplingEvictionInterval)
       this._samplingEvictionInterval = null
     }
+    // Flush incomplete aggregate groups
+    for (const [key, group] of this._aggregateGroups) {
+      this._emitAggregateSpan(key, group)
+    }
+    this._aggregateGroups.clear()
+
     // Flush remaining tail buffer entries
     for (const [traceId, entry] of this._tailBuffer) {
       if (!entry.flushed) {
@@ -402,6 +476,123 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
   forceFlush(): Promise<void> {
     return this._wrapped.forceFlush()
+  }
+
+  private _shouldAggregate(span: Span & ReadableSpan): boolean {
+    if (this._config.aggregateSpan?.(span)) return true
+    const scope = (span as any).instrumentationScope?.name
+    if (scope) {
+      const opts = OpinionatedInstrumentation.getOptions(scope)
+      if (opts?.aggregate) return true
+    }
+    return false
+  }
+
+  /**
+   * Handle a span that belongs to an aggregate group.
+   * Returns true if the span was consumed (non-error), false if it should fall through (error).
+   */
+  private _handleAggregateSpan(
+    span: ReadableSpan,
+    group: AggregateGroup,
+    key: string,
+  ): boolean {
+    group.inflight--
+    group.count++
+    const durationMs = this._spanDurationMs(span)
+
+    // Update time bounds (always, including errors)
+    if (
+      span.startTime[0] < group.earliestStart[0] ||
+      (span.startTime[0] === group.earliestStart[0] &&
+        span.startTime[1] < group.earliestStart[1])
+    ) {
+      group.earliestStart = [...span.startTime] as HrTime
+    }
+    if (
+      span.endTime[0] > group.latestEnd[0] ||
+      (span.endTime[0] === group.latestEnd[0] &&
+        span.endTime[1] > group.latestEnd[1])
+    ) {
+      group.latestEnd = [...span.endTime] as HrTime
+    }
+
+    const isError = span.status.code === SpanStatusCode.ERROR
+
+    if (isError) {
+      group.errorCount++
+    } else {
+      group.totalDurationMs += durationMs
+      group.nonErrorCount++
+      group.minDurationMs = Math.min(group.minDurationMs, durationMs)
+      group.maxDurationMs = Math.max(group.maxDurationMs, durationMs)
+
+      // Buffer the first non-error span for single-span optimization
+      if (group.bufferedFirstNonError === null) {
+        group.bufferedFirstNonError = span
+      }
+    }
+
+    if (group.inflight === 0) {
+      this._emitAggregateSpan(key, group)
+      this._aggregateGroups.delete(key)
+    }
+
+    // Error spans fall through to normal export; non-error spans are consumed
+    return !isError
+  }
+
+  private _emitAggregateSpan(key: string, group: AggregateGroup): void {
+    // No non-error spans — nothing to aggregate (errors were exported individually)
+    if (group.nonErrorCount === 0) return
+
+    // Single non-error span — just export the buffered original directly
+    if (group.nonErrorCount === 1 && group.bufferedFirstNonError) {
+      this._wrapped.onEnd(group.bufferedFirstNonError)
+      return
+    }
+
+    const template = group.firstSpan
+    const templateCtx = template.spanContext()
+
+    const spanContext: SpanContext = {
+      traceId: templateCtx.traceId,
+      spanId: randomBytes(8).toString('hex'),
+      traceFlags: templateCtx.traceFlags,
+    }
+
+    const aggregateSpan = new SpanImpl({
+      resource: template.resource,
+      scope: template.instrumentationScope,
+      context: ROOT_CONTEXT,
+      spanContext,
+      name: template.name,
+      kind: template.kind,
+      parentSpanContext: template.parentSpanContext,
+      links: [],
+      startTime: group.earliestStart,
+      attributes: {
+        ...template.attributes,
+        [OPIN_TEL_INTERNAL.aggregate.count]: group.count,
+        [OPIN_TEL_INTERNAL.aggregate.errorCount]: group.errorCount,
+        [OPIN_TEL_INTERNAL.aggregate.minDurationMs]: Math.round(
+          group.minDurationMs,
+        ),
+        [OPIN_TEL_INTERNAL.aggregate.maxDurationMs]: Math.round(
+          group.maxDurationMs,
+        ),
+        [OPIN_TEL_INTERNAL.aggregate.avgDurationMs]: Math.round(
+          group.totalDurationMs / group.nonErrorCount,
+        ),
+        [OPIN_TEL_INTERNAL.aggregate.totalDurationMs]: Math.round(
+          group.totalDurationMs,
+        ),
+      },
+      spanLimits: (template as any)._spanLimits,
+      spanProcessor: this._wrapped,
+    })
+
+    aggregateSpan.end(group.latestEnd)
   }
 
   private _reapStuckSpans(): void {
@@ -485,7 +676,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     // Memory delta for root spans
     if (!span.parentSpanContext) {
       if (this._memoryUse && this._memoryDeltaKeys.length > 0) {
-        this.captureMemoryDelta(span)
+        this._captureMemory(span)
       }
     }
 
@@ -818,6 +1009,14 @@ export class FilteringSpanProcessor implements SpanProcessor {
       }
     }
 
+    // Evict orphaned aggregate groups (inflight > 0 for too long)
+    for (const [key, group] of this._aggregateGroups) {
+      if (nowMs - group.createdAt > 60_000) {
+        this._emitAggregateSpan(key, group)
+        this._aggregateGroups.delete(key)
+      }
+    }
+
     // Evict stale EMA entries
     if (this._sampling?.burstProtection) {
       const halfLifeMs = this._sampling.burstProtection.halfLifeMs ?? 10_000
@@ -872,7 +1071,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     }
   }
 
-  private captureMemoryDelta(span: Span & ReadableSpan) {
+  private _captureMemory(span: Span & ReadableSpan) {
     const startMem = (span as any)[MEMORY_KEY]
     if (startMem != null) {
       if (this._memoryFastPath) {

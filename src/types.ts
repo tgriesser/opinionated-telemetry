@@ -84,6 +84,8 @@ export interface OpinionatedTelemetryConfig extends FilteringSpanProcessorConfig
 export interface OpinionatedOptions {
   /** Drop this span and reparent its children to its parent */
   reparent?: boolean
+  /** Collapse parallel sibling spans with the same name into a single aggregate span */
+  aggregate?: boolean
   /** Rename span in onStart */
   renameSpan?: (
     spanName: string,
