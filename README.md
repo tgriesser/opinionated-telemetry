@@ -2,13 +2,13 @@
 
 We've thought a lot about Telemetry in Node.js, so you don't have to
 
-"Opinionated" OpenTelemetry instrumentation patterns extracted from years of learnings from real-world o11y, extracted to help Node.js projects eveywhere. Sensible defaults, tools, and hooks to help you cut out the noise and cost from default "instrument everything" implementations, and help you really drill down and understand what's most important.
+Opinionated OpenTelemetry patterns extracted from years of learnings from real-world o11y, to help Node.js projects eveywhere. Sensible defaults, tools, and hooks to help you cut out the noise and cost from default "instrument everything" implementations, and help you really drill down and understand what's most important.
 
 The defaults included may or may not be right for you, so be sure to read the options carefully. Comes with powerful hooks for sampling spans, dropping spans, collapsing intermediate spans, globally "auto-instrumenting" important bits of your own code, as well as some nice helpers for some libraries I've used in the past.
 
-Contributions & feedback are welcome, especially if you have other libraries you have "opinionated" defaults for.
+Contributions & feedback are welcome, especially if you have other libraries you have sensible defaults for.
 
-Best suited for & meant use with [Honeycomb.io](https://www.honeycomb.io/). Virtually unlimited attributes on a span for no additional cost is such a powerful concept, I can't believe I don't hear it's praises more often.
+Best suited for & meant use with [Honeycomb.io](https://www.honeycomb.io/). Virtually unlimited attributes on a span for no additional cost is so powerful, I can't believe I don't hear its praises more often.
 
 
 ## Features
@@ -295,6 +295,91 @@ const unhook = createAutoInstrumentHookESM({
     { base: '/app/src', dirs: ['controllers', 'helpers', 'lib'] },
   ],
 })
+```
+
+## Flat Metric Exporter
+
+Honeycomb [merges metric data points into a single event](https://docs.honeycomb.io/manage-data-volume/adjust-granularity/metrics-events) when they share the same timestamp, resource, and data point attributes. But metrics with **different** dimensional attributes (like `v8js.heap.space.name=new_space` vs `v8js.gc.type=major`) end up as separate events.
+
+The `FlatMetricExporter` wraps your `OTLPMetricExporter` (or any `PushMetricExporter`) and transforms metrics before export:
+
+1. **Folds dimensional attributes into metric names** — so all data points have the same (empty) attribute set
+2. **Expands histograms** into individual gauge metrics with summary stats and percentiles
+
+This ensures Honeycomb merges everything into one wide event per collection cycle.
+
+```ts
+import { FlatMetricExporter } from 'opinionated-telemetry/metrics'
+import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics'
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-proto'
+
+const metricReader = new PeriodicExportingMetricReader({
+  exporter: new FlatMetricExporter({
+    exporter: new OTLPMetricExporter({
+      url: 'https://api.honeycomb.io:443/v1/metrics',
+      headers: { 'x-honeycomb-team': process.env.HONEYCOMB_API_KEY },
+    }),
+  }),
+  exportIntervalMillis: 15_000,
+})
+```
+
+### Dimensional flattening
+
+Metrics with dimensional attributes (like `v8js.heap.space.name`) are flattened by appending the dimension value to the metric name by default. Use `renameDimension` for custom naming:
+
+```ts
+new FlatMetricExporter({
+  exporter: metricExporter,
+  renameDimension: (metricName, dimKey, dimValue) => {
+    if (dimKey === 'v8js.heap.space.name') {
+      const short = dimValue.replace('_space', '')
+      return metricName.replace('.heap.', `.heap_${short}.`)
+    }
+    if (dimKey === 'v8js.gc.type') {
+      return metricName.replace('v8js.gc.', `v8js.gc_${dimValue}.`)
+    }
+    // Return undefined to use default (append _value)
+  },
+})
+```
+
+### Histogram expansion
+
+Histogram metrics are automatically expanded into summary stats and percentiles:
+
+| Suffix                                          | Description                  |
+| ----------------------------------------------- | ---------------------------- |
+| `.count`                                        | Total number of observations |
+| `.sum`                                          | Sum of all values            |
+| `.min`                                          | Minimum value                |
+| `.max`                                          | Maximum value                |
+| `.avg`                                          | Mean value (sum/count)       |
+| `.p50`, `.p75`, `.p90`, `.p95`, `.p99`, `.p999` | Percentiles (configurable)   |
+
+Customize percentiles via `histogramPercentiles`:
+
+```ts
+new FlatMetricExporter({
+  exporter: metricExporter,
+  histogramPercentiles: [0.5, 0.9, 0.95, 0.99],
+})
+```
+
+### Result
+
+Instead of N separate metric events, you get a single wide event per collection cycle:
+
+```
+timestamp: 2026-03-06T19:31:01Z
+socket.io.open_connections: 1
+v8js.memory.heap_new.used: 220136
+v8js.memory.heap_new.limit: 1048576
+v8js.memory.heap_large_object.used: 23513056
+v8js.gc_major.duration.count: 3
+v8js.gc_major.duration.avg: 0.0105
+v8js.gc_major.duration.p99: 0.015
+...
 ```
 
 ## Sampling
