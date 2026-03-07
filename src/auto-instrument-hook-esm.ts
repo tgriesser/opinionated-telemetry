@@ -1,10 +1,12 @@
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import { trace } from '@opentelemetry/api'
 import debugLib from 'debug'
 import { wrapModuleExports } from './wrap-exports.js'
 import { buildMatchers, matchPath } from './auto-instrument-matchers.js'
 import type { AutoInstrumentHookConfig } from './types.js'
+import { OPIN_TEL_PREFIX } from './constants.js'
 
 const debug = debugLib('opin_tel:auto-instrument-esm')
 
@@ -22,7 +24,9 @@ const debug = debugLib('opin_tel:auto-instrument-esm')
 export function createAutoInstrumentHookESM(
   config: AutoInstrumentHookConfig,
 ): () => void {
-  const { tracer, instrumentPaths, ignoreRules = [] } = config
+  const { instrumentPaths, ignoreRules = [] } = config
+  const getTracer = () =>
+    config.tracer ?? trace.getTracer(`${OPIN_TEL_PREFIX}auto`)
   const matchers = buildMatchers(instrumentPaths)
 
   debug('setting up ESM hook with %d matcher(s)', matchers.length)
@@ -55,7 +59,7 @@ export function createAutoInstrumentHookESM(
     const relativePath = matchPath(resolvedPath, matchers)
     if (relativePath) {
       debug('wrapping ESM module: %s', relativePath)
-      wrapModuleExports(exported, relativePath, tracer, ignoreRules)
+      wrapModuleExports(exported, relativePath, getTracer(), ignoreRules)
     }
   })
 

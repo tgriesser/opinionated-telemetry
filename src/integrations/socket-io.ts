@@ -1,6 +1,7 @@
 import { metrics } from '@opentelemetry/api'
 import debugLib from 'debug'
 import { withBaggage } from '../baggage.js'
+import type EventEmitter from 'node:events'
 
 const debug = debugLib('opin_tel:socket-io')
 
@@ -34,8 +35,8 @@ export function otelInitSocketIo(io: any, config?: SocketOtelConfig): void {
  * Patches a Socket.IO socket's .on() to inject baggage context
  * into all event handlers.
  */
-export function otelPatchSocketIo(
-  socket: any,
+export function otelPatchSocketIo<S extends EventEmitter = any>(
+  socket: S,
   config: PatchSocketOtelConfig,
 ): void {
   const { getBaggage } = config

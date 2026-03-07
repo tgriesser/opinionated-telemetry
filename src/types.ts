@@ -4,6 +4,7 @@ import type {
   SpanLimits,
   SpanProcessor,
   ReadableSpan,
+  BufferConfig,
 } from '@opentelemetry/sdk-trace-base'
 import type { MetricReader } from '@opentelemetry/sdk-metrics'
 import type { Instrumentation } from '@opentelemetry/instrumentation'
@@ -79,6 +80,8 @@ export interface OpinionatedTelemetryConfig extends FilteringSpanProcessorConfig
   shutdownSignal?: string
   instrumentations: Array<Instrumentation | OpinionatedInstrumentation>
   additionalSpanProcessors?: SpanProcessor[]
+  /** BatchSpanProcessor config overrides. Opinionated defaults: scheduledDelayMillis=2000, exportTimeoutMillis=10000 */
+  batchProcessorConfig?: BufferConfig
 }
 
 export type AggregateGenericOption = 'uniq'
@@ -138,7 +141,8 @@ export interface AutoInstrumentPath {
 }
 
 export interface AutoInstrumentHookConfig {
-  tracer: import('@opentelemetry/api').Tracer
+  /** Tracer to use for auto-instrumented spans. Default: `trace.getTracer('opin_tel.auto')` */
+  tracer?: import('@opentelemetry/api').Tracer
   instrumentPaths: AutoInstrumentPath[]
   ignoreRules?: IgnoreRuleEntry[]
 }

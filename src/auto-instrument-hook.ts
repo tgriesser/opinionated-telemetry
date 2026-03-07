@@ -1,15 +1,19 @@
 import Module from 'node:module'
+import { trace } from '@opentelemetry/api'
 import debugLib from 'debug'
 import { wrapModuleExports } from './wrap-exports.js'
 import { buildMatchers, matchPath } from './auto-instrument-matchers.js'
 import type { AutoInstrumentHookConfig } from './types.js'
+import { OPIN_TEL_PREFIX } from './constants.js'
 
 const debug = debugLib('opin_tel:auto-instrument')
 
 export function createAutoInstrumentHookCJS(
   config: AutoInstrumentHookConfig,
 ): void {
-  const { tracer, instrumentPaths, ignoreRules = [] } = config
+  const { instrumentPaths, ignoreRules = [] } = config
+  const getTracer = () =>
+    config.tracer ?? trace.getTracer(`${OPIN_TEL_PREFIX}auto`)
   const matchers = buildMatchers(instrumentPaths)
 
   debug('patching Module._load with %d matcher(s)', matchers.length)
@@ -43,7 +47,7 @@ export function createAutoInstrumentHookCJS(
     const relativePath = matchPath(resolvedPath, matchers)
     if (relativePath) {
       debug('wrapping module: %s', relativePath)
-      return wrapModuleExports(result, relativePath, tracer, ignoreRules)
+      return wrapModuleExports(result, relativePath, getTracer(), ignoreRules)
     }
 
     return result

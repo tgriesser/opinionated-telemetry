@@ -7,5 +7,5 @@
     "declaration": false,
     "declarationMap": false
   },
-  "exclude": ["src/auto-instrument-hook-esm.ts"]
+  "exclude": ["src/auto-instrument-hook-esm.ts", "src/auto-instrument-esm.ts"]
 }

@@ -22,6 +22,7 @@ Best suited for & meant use with [Honeycomb.io](https://www.honeycomb.io/). Virt
 - **Head & Tail Based Sampling**: Includes sensible approaches to dealing with Head & Tail based sampling out of the box
 - **Burst Protection**: Along with the sampling, includes some conventions for preventing a simple coding mistake that generates an infinite loop spawning thousands of spans per second from doing too much damage.
 - **Span aggregation**: collapses N parallel sibling spans with the same name (dataloader batches, S3 multi-get, parallel DB queries) into a single aggregate span with summary statistics, while preserving individual error spans. Configurable via per-scope options or a root-level predicate, with optional custom attribute stats (min, max, avg, median, uniq, etc.)
+- **Flat metric exporter**: [opt-in exporter](#flat-metric-exporter) that wraps your metric exporter to fold dimensional attributes into metric names and expand histograms into summary stats + percentiles — so Honeycomb merges everything into a single wide event per collection cycle.
 - **Integration helpers**: knex, graphql, bull, socket.io, express
 - **Event loop utilization**: captures event loop utilization (0-1) on all spans. Useful for alerting on situation where expensive spans are blocking the event loop. Particularly useful when dealing with things that are synchronous, like `fs` calls or `better-sqlite3` queries
 
@@ -86,6 +87,7 @@ opinionatedTelemetryInit({
   aggregateSpan?: (span) => boolean | AggregateConfig, // default: undefined
   instrumentations: Array<Instrumentation | OpinionatedInstrumentation>,
   additionalSpanProcessors?: SpanProcessor[],
+  batchProcessorConfig?: BufferConfig,           // opinionated defaults below
 })
 ```
 
@@ -122,6 +124,28 @@ stuckSpanDetection: {
 ```
 
 Stuck span snapshots are exported with the original span's trace/span IDs, an `(incomplete)` name suffix, and attributes `opin_tel.stuck.duration_ms` and `opin_tel.stuck.is_snapshot`. They also receive memory delta, ELU, and instrumentation hook enrichment.
+
+#### `batchProcessorConfig`
+
+Overrides for the internal `BatchSpanProcessor`. Opinionated defaults differ from OTel's out-of-the-box values:
+
+| Option                 | OTel Default | Opinionated Default |
+| ---------------------- | ------------ | ------------------- |
+| `scheduledDelayMillis` | 5000         | **2000**            |
+| `exportTimeoutMillis`  | 30000        | **10000**           |
+| `maxExportBatchSize`   | 512          | 512                 |
+| `maxQueueSize`         | 2048         | 2048                |
+
+Pass a `BufferConfig` object to override any of these:
+
+```ts
+opinionatedTelemetryInit({
+  batchProcessorConfig: {
+    scheduledDelayMillis: 1000, // flush every second
+    maxQueueSize: 4096,
+  },
+})
+```
 
 ### Span Aggregation
 
@@ -242,17 +266,33 @@ withBaggage({ 'app.account_id': '123' }, () => {
 
 ### Auto-instrumentation
 
+Auto-instrumentation hooks are opt-in imports, separate from the main entry point:
+
+**CJS** (`Module._load` patching):
+
 ```ts
-import { createAutoInstrumentHookCJS } from 'opinionated-telemetry'
+import { createAutoInstrumentHookCJS } from 'opinionated-telemetry/auto-instrument'
 
 createAutoInstrumentHookCJS({
-  tracer: getTracer('auto-instrument'),
+  // tracer is optional — defaults to trace.getTracer('opin_tel.auto')
   instrumentPaths: [
     { base: '/app/src', dirs: ['controllers', 'helpers', 'lib'] },
   ],
   ignoreRules: [
     'helpers/health-check',
     { file: 'helpers/utils', exports: ['internalFn'] },
+  ],
+})
+```
+
+**ESM** (requires `--import @opentelemetry/instrumentation/hook.mjs`):
+
+```ts
+import { createAutoInstrumentHookESM } from 'opinionated-telemetry/auto-instrument-esm'
+
+const unhook = createAutoInstrumentHookESM({
+  instrumentPaths: [
+    { base: '/app/src', dirs: ['controllers', 'helpers', 'lib'] },
   ],
 })
 ```

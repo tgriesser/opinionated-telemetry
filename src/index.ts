@@ -1,3 +1,7 @@
+export { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto'
+export { trace, context, propagation } from '@opentelemetry/api'
+
+export type { SpanExporter, BufferConfig } from '@opentelemetry/sdk-trace-base'
 export { opinionatedTelemetryInit } from './init.js'
 export { OpinionatedInstrumentation } from './opinionated-instrumentation.js'
 export { FilteringSpanProcessor } from './filtering-span-processor.js'
@@ -16,10 +20,6 @@ export {
 } from './integrations/knex.js'
 
 export { wrapModuleExports, wrapFunction } from './wrap-exports.js'
-export { createAutoInstrumentHookCJS } from './auto-instrument-hook.js'
-export { buildMatchers, matchPath } from './auto-instrument-matchers.js'
-export type { Matcher } from './auto-instrument-matchers.js'
-export { createAutoInstrumentHookESM } from './auto-instrument-hook-esm.js'
 
 export type {
   OpinionatedTelemetryConfig,
@@ -30,8 +30,6 @@ export type {
   AggregateNumericOption,
   IgnoreRule,
   IgnoreRuleEntry,
-  AutoInstrumentPath,
-  AutoInstrumentHookConfig,
   SamplingConfig,
   HeadSamplingConfig,
   TailSamplingConfig,

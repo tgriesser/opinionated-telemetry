@@ -8,6 +8,12 @@ import { FilteringSpanProcessor } from './filtering-span-processor.js'
 import { OpinionatedInstrumentation } from './opinionated-instrumentation.js'
 import type { OpinionatedTelemetryConfig } from './types.js'
 
+/** Opinionated BatchSpanProcessor defaults: flush more frequently, shorter timeout */
+const DEFAULT_BATCH_CONFIG = {
+  scheduledDelayMillis: 2000,
+  exportTimeoutMillis: 10000,
+}
+
 /** Honeycomb-friendly defaults */
 const DEFAULT_SPAN_LIMITS = {
   attributeCountLimit: 2000,
@@ -30,6 +36,7 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     shutdownSignal = 'SIGTERM',
     instrumentations,
     additionalSpanProcessors = [],
+    batchProcessorConfig,
     ...processorConfig
   } = config
 
@@ -48,7 +55,10 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     return inst
   })
 
-  const batchProcessor = new BatchSpanProcessor(traceExporter)
+  const batchProcessor = new BatchSpanProcessor(traceExporter, {
+    ...DEFAULT_BATCH_CONFIG,
+    ...batchProcessorConfig,
+  })
   const filteringProcessor = new FilteringSpanProcessor(
     batchProcessor,
     processorConfig,

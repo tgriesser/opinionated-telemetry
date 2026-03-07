@@ -10,6 +10,20 @@
       "require": "./dist/cjs/index.js",
       "types": "./dist/esm/index.d.ts"
     },
+    "./metrics": {
+      "import": "./dist/esm/metrics.js",
+      "require": "./dist/cjs/metrics.js",
+      "types": "./dist/esm/metrics.d.ts"
+    },
+    "./auto-instrument": {
+      "import": "./dist/esm/auto-instrument.js",
+      "require": "./dist/cjs/auto-instrument.js",
+      "types": "./dist/esm/auto-instrument.d.ts"
+    },
+    "./auto-instrument-esm": {
+      "import": "./dist/esm/auto-instrument-esm.js",
+      "types": "./dist/esm/auto-instrument-esm.d.ts"
+    },
     "./integrations/knex": {
       "import": "./dist/esm/integrations/knex.js",
       "require": "./dist/cjs/integrations/knex.js",
@@ -53,6 +67,8 @@
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/core": "^2.6.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.213.0",
     "@opentelemetry/instrumentation": "^0.213.0",
     "@opentelemetry/resources": "^2.6.0",
     "@opentelemetry/sdk-metrics": "^2.6.0",
