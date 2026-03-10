@@ -2,7 +2,7 @@ export { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto'
 export { trace, context, propagation } from '@opentelemetry/api'
 
 export type { SpanExporter, BufferConfig } from '@opentelemetry/sdk-trace-base'
-export { opinionatedTelemetryInit } from './init.js'
+export { opinionatedTelemetryInit } from './opinionated-telemetry-init.js'
 export { FilteringSpanProcessor } from './filtering-span-processor.js'
 export type {
   FilteringSpanProcessorConfig,

@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { InMemorySpanExporter } from '@opentelemetry/sdk-trace-base'
 import type { SpanProcessor, ReadableSpan } from '@opentelemetry/sdk-trace-base'
 import { trace } from '@opentelemetry/api'
-import { opinionatedTelemetryInit } from '../../src/init.js'
+import { opinionatedTelemetryInit } from '../../src/opinionated-telemetry-init.js'
 import { cleanupOtel, nextTick } from '../helpers.js'
 
 function createExporter() {
