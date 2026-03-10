@@ -661,6 +661,35 @@ io.on('connection', (socket) => {
 | `meterName`  | Meter name for the connection gauge. Default: `'socket-io-otel'`                       |
 | `getBaggage` | **Required.** Function returning baggage entries to inject into event handler contexts |
 
+## Testing Utilities
+
+`opinionated-telemetry/testing` provides `TestSpanExporter` and `TestMetricExporter` — drop-in OTel exporter implementations with built-in assertion helpers, search utilities, and ASCII span tree rendering.
+
+```ts
+import {
+  TestSpanExporter,
+  TestMetricExporter,
+} from 'opinionated-telemetry/testing'
+
+const exporter = new TestSpanExporter()
+
+// ... run your code ...
+
+exporter.assertNoErrors()
+exporter.assertNoOrphanSpans()
+exporter.assertSpanExists('GET /api/users')
+exporter.assertSpanCount('db.query', 3)
+exporter.assertSpanAttributes('GET /api/users', { 'http.method': 'GET' })
+
+console.log(exporter.toTree())
+// GET /api/users
+// ├── middleware - auth
+// ├── db.query SELECT users
+// └── serialize response
+```
+
+See [docs/TESTING.md](docs/TESTING.md) for the full API reference.
+
 ## License
 
 MIT

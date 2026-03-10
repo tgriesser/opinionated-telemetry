@@ -34,6 +34,11 @@
       "import": "./dist/esm/auto-instrument-esm.js",
       "types": "./dist/esm/auto-instrument-esm.d.ts"
     },
+    "./testing": {
+      "import": "./dist/esm/testing.js",
+      "require": "./dist/cjs/testing.js",
+      "types": "./dist/esm/testing.d.ts"
+    },
     "./integrations/knex": {
       "import": "./dist/esm/integrations/knex.js",
       "require": "./dist/cjs/integrations/knex.js",
@@ -63,6 +68,12 @@
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",
   "types": "./dist/esm/index.d.ts",
+  "files": [
+    "README.md",
+    "dist",
+    "src",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "npm run build:esm && npm run build:cjs",
     "build:cjs": "tsc -p tsconfig.cjs.json && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",

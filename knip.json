@@ -4,7 +4,6 @@
     "@opentelemetry/context-async-hooks",
     "better-sqlite3",
     "@types/better-sqlite3",
-
     "@vitest/coverage-v8"
   ]
 }
