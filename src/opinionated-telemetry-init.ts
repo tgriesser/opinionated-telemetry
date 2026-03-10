@@ -80,9 +80,8 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
 
   sdk.start()
   debug(
-    'sdk started (dropSyncSpans=%s, collapse=%s, baggageToAttributes=%s)',
+    'sdk started (dropSyncSpans=%s, baggageToAttributes=%s)',
     !!(processorConfig.dropSyncSpans ?? true),
-    processorConfig.enableCollapse ?? true,
     processorConfig.baggageToAttributes ?? true,
   )
 

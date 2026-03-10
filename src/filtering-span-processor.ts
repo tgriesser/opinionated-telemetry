@@ -88,8 +88,6 @@ export interface StuckSpanConfig {
 export interface FilteringSpanProcessorConfig {
   /** Drop spans that start and end in the same tick. Default: true */
   dropSyncSpans?: boolean | ((span: Span & ReadableSpan) => boolean)
-  /** Enable collapse for instrumentations with collapse: true. Default: true */
-  enableCollapse?: boolean
   /** Propagate baggage entries as span attributes in onStart. Default: true */
   baggageToAttributes?: boolean
   /**
@@ -186,7 +184,6 @@ export class FilteringSpanProcessor implements SpanProcessor {
     this._wrapped = wrapped
     this._config = {
       dropSyncSpans: config?.dropSyncSpans ?? true,
-      enableCollapse: config?.enableCollapse ?? true,
       baggageToAttributes: config?.baggageToAttributes ?? true,
       memory: config?.memory ?? true,
       memoryDelta: config?.memoryDelta ?? true,
@@ -419,7 +416,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     }
 
     // Collapse drop decision (not part of enrichment)
-    if (span.parentSpanContext && this._config.enableCollapse) {
+    if (span.parentSpanContext) {
       // Drop spans that were marked for collapse
       const shouldDropSpan = this._collapseSpans.has(span.spanContext().spanId)
       if (shouldDropSpan) {
@@ -816,7 +813,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       if (!span.attributes[OPIN_TEL_INTERNAL.stuck.isSnapshot]) {
         this._rootSpans.delete(span.spanContext().traceId)
       }
-    } else if (this._config.enableCollapse) {
+    } else {
       const parentSpanId = (span as any).parentSpanContext.spanId
       let collapsedSpan = this._collapseSpans.get(parentSpanId)
       if (collapsedSpan) {

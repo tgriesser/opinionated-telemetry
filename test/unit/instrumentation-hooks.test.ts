@@ -16,7 +16,6 @@ describe('instrumentationHooks', () => {
     }
     const processor = new FilteringSpanProcessor(wrapped, {
       dropSyncSpans: false,
-      enableCollapse: true,
       instrumentationHooks: {
         'test-scope': { collapse: true },
       },

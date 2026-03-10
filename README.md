@@ -73,7 +73,6 @@ opinionatedTelemetryInit({
   metricReader?: MetricReader,
   spanLimits?: SpanLimits,
   dropSyncSpans?: true | ((span) => boolean),        // default: true
-  enableCollapse?: boolean,                           // default: true
   baggageToAttributes?: boolean,                     // default: true
   memory?: boolean | MemoryConfig,              // default: true (rss only)
   memoryDelta?: boolean | MemoryConfig,              // default: true (rss only)
