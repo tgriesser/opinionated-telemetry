@@ -2,7 +2,10 @@ import debugLib from 'debug'
 import { NodeSDK } from '@opentelemetry/sdk-node'
 import { resourceFromAttributes } from '@opentelemetry/resources'
 import { ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions'
-import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base'
+import {
+  BatchSpanProcessor,
+  SimpleSpanProcessor,
+} from '@opentelemetry/sdk-trace-base'
 import { trace } from '@opentelemetry/api'
 import {
   CompositePropagator,
@@ -63,12 +66,16 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     }
   }
 
-  const batchProcessor = new BatchSpanProcessor(traceExporter, {
-    ...DEFAULT_BATCH_CONFIG,
-    ...batchProcessorConfig,
-  })
+  const exportProcessor =
+    batchProcessorConfig === false
+      ? new SimpleSpanProcessor(traceExporter)
+      : new BatchSpanProcessor(traceExporter, {
+          ...DEFAULT_BATCH_CONFIG,
+          ...batchProcessorConfig,
+        })
+
   const filteringProcessor = new FilteringSpanProcessor(
-    batchProcessor,
+    exportProcessor,
     processorConfig,
   )
   const spanProcessors = [...additionalSpanProcessors, filteringProcessor]

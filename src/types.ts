@@ -99,8 +99,8 @@ export interface OpinionatedTelemetryConfig extends FilteringSpanProcessorConfig
   shutdownSignal?: string
   instrumentations: Instrumentation[]
   additionalSpanProcessors?: SpanProcessor[]
-  /** BatchSpanProcessor config overrides. Opinionated defaults: scheduledDelayMillis=2000, exportTimeoutMillis=10000 */
-  batchProcessorConfig?: BufferConfig
+  /** BatchSpanProcessor config overrides. Set to false to disable batching (uses SimpleSpanProcessor). Opinionated defaults: scheduledDelayMillis=2000, exportTimeoutMillis=10000 */
+  batchProcessorConfig?: BufferConfig | false
   /**
    * Control which baggage entries are propagated on outgoing HTTP requests.
    * Default: suppresses all outbound baggage injection (extract/inbound still works).

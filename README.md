@@ -85,7 +85,7 @@ opinionatedTelemetryInit({
   instrumentations: Instrumentation[],
   instrumentationHooks?: Record<string, OpinionatedOptions>,
   additionalSpanProcessors?: SpanProcessor[],
-  batchProcessorConfig?: BufferConfig,           // opinionated defaults below
+  batchProcessorConfig?: BufferConfig | false,    // false disables batching
   baggagePropagation?: BaggagePropagationConfig, // default: suppress all outbound
   logger?: OpinionatedLogger,                    // default: console
 })
@@ -144,6 +144,14 @@ opinionatedTelemetryInit({
     scheduledDelayMillis: 1000, // flush every second
     maxQueueSize: 4096,
   },
+})
+```
+
+Set to `false` to disable batching entirely and use a `SimpleSpanProcessor` instead. Spans will be exported immediately as they complete, which is useful for development, testing, or low-volume services:
+
+```ts
+opinionatedTelemetryInit({
+  batchProcessorConfig: false,
 })
 ```
 
