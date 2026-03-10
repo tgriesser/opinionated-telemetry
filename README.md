@@ -250,9 +250,9 @@ opinionatedTelemetryInit({
       aggregate: true,
     },
     '@opentelemetry/instrumentation-http': {
-      onEnd: (span) =>
+      onEnd: (span, durationMs) =>
         span.updateName(
-          `${span.attributes['http.method']} ${span.attributes['http.route']}`,
+          `${span.attributes['http.method']} ${span.attributes['http.route']} (${Math.round(durationMs)}ms)`,
         ),
     },
   },
@@ -264,7 +264,7 @@ Options per hook:
 - `collapse` — drop this span, merge attrs into children, reparent children to grandparent
 - `aggregate` — `true` or an `AggregateConfig` to collapse parallel sibling spans into a single aggregate
 - `onStart(span)` — called during span start; use `span.updateName()` to rename, `span.setAttribute()` to enrich, etc.
-- `onEnd(span)` — called during span end (before export); same span mutation APIs available
+- `onEnd(span, durationMs)` — called during span end (before export); `durationMs` is the span duration in milliseconds. Same span mutation APIs available
 
 A warning is logged (via `console.warn` by default) if any hook key doesn't match a registered instrumentation name. Pass a custom `logger` to redirect or suppress these warnings.
 

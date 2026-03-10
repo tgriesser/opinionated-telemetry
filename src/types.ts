@@ -121,7 +121,7 @@ export interface OpinionatedOptions {
   /** Custom onStart hook */
   onStart?: (span: Span & ReadableSpan) => void
   /** Custom onEnd hook */
-  onEnd?: (span: Span & ReadableSpan) => void
+  onEnd?: (span: Span & ReadableSpan, durationMs: number) => void
 }
 
 export interface IgnoreRule {

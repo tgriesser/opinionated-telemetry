@@ -218,6 +218,30 @@ describe('FilteringSpanProcessor', () => {
       expect(onStart).toHaveBeenCalledOnce()
       expect(onEnd).toHaveBeenCalledOnce()
     })
+
+    it('passes durationMs as second argument to onEnd', async () => {
+      const onEnd = vi.fn()
+
+      const { provider, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        instrumentationHooks: {
+          '@test/duration': { onEnd },
+        },
+      })
+
+      const tracer = provider.getTracer('@test/duration')
+      const span = tracer.startSpan('timed')
+      await new Promise((r) => setTimeout(r, 50))
+      span.end()
+
+      await shutdown()
+
+      expect(onEnd).toHaveBeenCalledOnce()
+      const [, durationMs] = onEnd.mock.calls[0]
+      expect(durationMs).toBeTypeOf('number')
+      expect(durationMs).toBeGreaterThanOrEqual(40)
+      expect(durationMs).toBeLessThan(500)
+    })
   })
 
   describe('collapseing chain', () => {

@@ -34,6 +34,10 @@ const AGGREGATE_KEY = '__aggregateKey'
 
 type HrTime = [number, number]
 
+function hrTimeToMs(hr: HrTime): number {
+  return hr[0] * 1e3 + hr[1] / 1e6
+}
+
 interface AttributeTracker {
   sourceAttribute: string
   options: string[]
@@ -786,7 +790,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     if (scope) {
       const opts = this._instrumentationHooks[scope]
       if (opts?.onEnd) {
-        opts.onEnd(span)
+        opts.onEnd(span, hrTimeToMs(span.duration as HrTime))
       }
     }
 
