@@ -85,8 +85,6 @@ export interface OpinionatedTelemetryConfig extends FilteringSpanProcessorConfig
   additionalSpanProcessors?: SpanProcessor[]
   /** BatchSpanProcessor config overrides. Opinionated defaults: scheduledDelayMillis=2000, exportTimeoutMillis=10000 */
   batchProcessorConfig?: BufferConfig
-  /** Logger for warnings. Default: console */
-  logger?: OpinionatedLogger
 }
 
 export type AggregateGenericOption = 'uniq'

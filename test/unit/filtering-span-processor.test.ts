@@ -661,8 +661,8 @@ describe('FilteringSpanProcessor', () => {
     })
   })
 
-  describe('onSpanAfterShutdown', () => {
-    it('calls onSpanAfterShutdown when a span ends after shutdown', async () => {
+  describe('span after shutdown', () => {
+    it('calls onSpanAfterShutdown when provided', async () => {
       const afterShutdown = vi.fn()
       const { tracer, processor } = createTestProvider({
         dropSyncSpans: false,
@@ -677,16 +677,21 @@ describe('FilteringSpanProcessor', () => {
       expect(afterShutdown.mock.calls[0][0].name).toBe('late-span')
     })
 
-    it('does not throw when no onSpanAfterShutdown is provided', async () => {
+    it('falls back to logger.warn when no onSpanAfterShutdown is provided', async () => {
+      const logger = { warn: vi.fn() }
       const { tracer, processor } = createTestProvider({
         dropSyncSpans: false,
+        logger,
       })
 
-      const span = tracer.startSpan('late-span-no-handler')
+      const span = tracer.startSpan('late-span')
       await processor.shutdown()
+      span.end()
 
-      // Should not throw
-      expect(() => span.end()).not.toThrow()
+      expect(logger.warn).toHaveBeenCalledOnce()
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('late-span'),
+      )
     })
   })
 

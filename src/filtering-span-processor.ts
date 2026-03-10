@@ -16,6 +16,7 @@ import { crc32 } from 'node:zlib'
 import debugLib from 'debug'
 import type {
   AggregateConfig,
+  OpinionatedLogger,
   OpinionatedOptions,
   SamplingConfig,
 } from './types.js'
@@ -110,7 +111,7 @@ export interface FilteringSpanProcessorConfig {
    * - `false`: disable
    */
   eventLoopUtilization?: boolean | 'root'
-  /** Called when a span ends after shutdown and won't be exported. Default: debug log */
+  /** Called when a span ends after shutdown and won't be exported. Default: logger.warn */
   onSpanAfterShutdown?: (span: Span & ReadableSpan) => void
   /** Enable stuck span detection. Default: true */
   stuckSpanDetection?: boolean | StuckSpanConfig
@@ -120,6 +121,8 @@ export interface FilteringSpanProcessorConfig {
   aggregateSpan?: (span: Span & ReadableSpan) => boolean | AggregateConfig
   /** Per-instrumentation hooks keyed by instrumentation scope name */
   instrumentationHooks?: Record<string, OpinionatedOptions>
+  /** Logger for warnings. Default: console */
+  logger?: OpinionatedLogger
 }
 
 interface TailBufferEntry {
@@ -173,6 +176,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     null
   private _aggregateGroups = new Map<string, AggregateGroup>()
   private _instrumentationHooks: Record<string, OpinionatedOptions>
+  private _logger: OpinionatedLogger
 
   constructor(wrapped: SpanProcessor, config?: FilteringSpanProcessorConfig) {
     this._wrapped = wrapped
@@ -188,6 +192,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       aggregateSpan: config?.aggregateSpan,
     }
     this._instrumentationHooks = config?.instrumentationHooks ?? {}
+    this._logger = config?.logger ?? console
     const captureMemory = Boolean(
       this._config.memory || this._config.memoryDelta,
     )
@@ -1145,7 +1150,9 @@ export class FilteringSpanProcessor implements SpanProcessor {
     if (this._config.onSpanAfterShutdown) {
       this._config.onSpanAfterShutdown(span)
     } else {
-      debug('span after shutdown, not exported: %s', span.name)
+      this._logger.warn(
+        `[opin_tel] span ended after shutdown, not exported: ${span.name}`,
+      )
     }
   }
 

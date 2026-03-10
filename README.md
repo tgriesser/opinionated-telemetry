@@ -79,7 +79,7 @@ opinionatedTelemetryInit({
   memoryDelta?: boolean | MemoryConfig,              // default: true (rss only)
   eventLoopUtilization?: boolean | 'root',           // default: true (all spans)
   stuckSpanDetection?: boolean | StuckSpanConfig,    // default: true
-  onSpanAfterShutdown?: (span) => void,              // default: debug log
+  onSpanAfterShutdown?: (span) => void,              // default: logger.warn
   shutdownSignal?: string,                           // default: 'SIGTERM'
   aggregateSpan?: (span) => boolean | AggregateConfig, // default: undefined
   instrumentations: Instrumentation[],

@@ -36,9 +36,10 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     instrumentations,
     additionalSpanProcessors = [],
     batchProcessorConfig,
-    logger = console,
     ...processorConfig
   } = config
+
+  const logger = processorConfig.logger ?? console
 
   debug('initializing service=%s', serviceName)
 
