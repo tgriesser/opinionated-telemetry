@@ -4,7 +4,12 @@ import { resourceFromAttributes } from '@opentelemetry/resources'
 import { ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions'
 import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base'
 import { trace } from '@opentelemetry/api'
+import {
+  CompositePropagator,
+  W3CTraceContextPropagator,
+} from '@opentelemetry/core'
 import { FilteringSpanProcessor } from './filtering-span-processor.js'
+import { FilteredBaggagePropagator } from './filtered-baggage-propagator.js'
 import type { OpinionatedTelemetryConfig } from './types.js'
 
 /** Opinionated BatchSpanProcessor defaults: flush more frequently, shorter timeout */
@@ -36,6 +41,7 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     instrumentations,
     additionalSpanProcessors = [],
     batchProcessorConfig,
+    baggagePropagation,
     ...processorConfig
   } = config
 
@@ -67,6 +73,20 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
   )
   const spanProcessors = [...additionalSpanProcessors, filteringProcessor]
 
+  if (process.env.OTEL_PROPAGATORS) {
+    logger.warn(
+      '[opin_tel] OTEL_PROPAGATORS env var is set — the filtered baggage propagator will not be active. ' +
+        'Remove OTEL_PROPAGATORS to use the default safe baggage filtering.',
+    )
+  }
+
+  const textMapPropagator = new CompositePropagator({
+    propagators: [
+      new W3CTraceContextPropagator(),
+      new FilteredBaggagePropagator(baggagePropagation),
+    ],
+  })
+
   const sdk = new NodeSDK({
     resource: resourceFromAttributes({
       [ATTR_SERVICE_NAME]: serviceName,
@@ -74,6 +94,7 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     }),
     spanLimits,
     spanProcessors,
+    textMapPropagator,
     ...(metricReader ? { metricReader } : {}),
     instrumentations,
   })

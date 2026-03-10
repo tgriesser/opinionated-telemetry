@@ -16,7 +16,7 @@ Best suited for & meant use with [Honeycomb.io](https://www.honeycomb.io/). Virt
 - **Stuck span detection**: detects in-flight spans exceeding a threshold and exports early "diagnostic" span snapshots, so you can understand what might be broken sooner (long queries, hung requests, etc.)
 - **Sync span dropping**: automatically drops "synchronous" spans that are start and end in the same tick by default, configurable to allow for keeping specific spans e.g. keeping sync spans > `100ms`, or spans with a certain name, etc.
 - **Span collapsing**: allows us to drop intermediate spans (e.g. knex, graphql) and merge their attributes into child spans. No use having both a `knex` span that has a single nested `pg` or `mysql` span underneath, unless there is an error in the `knex` span or something
-- **Baggage propagation**: propagates baggage entries as span attributes on all child spans by default
+- **Baggage propagation**: propagates baggage entries as span attributes on all child spans by default, with outbound baggage suppressed to prevent leaking sensitive data to external APIs (opt-in allowlisting by host and key)
 - **Memory & Memory delta tracking**: captures RSS (or detailed heap, configurable) memory & memory deltas on root spans.
 - **Auto-instrumentation**: [opt-in hooks](#auto-instrumentation) wraps exported async functions from your own codebase with auto-spans based on the function or method name, configured via `ESM` or `Module._load` patching
 - **Head & Tail Based Sampling**: Includes sensible approaches to dealing with Head & Tail based sampling out of the box
@@ -86,6 +86,7 @@ opinionatedTelemetryInit({
   instrumentationHooks?: Record<string, OpinionatedOptions>,
   additionalSpanProcessors?: SpanProcessor[],
   batchProcessorConfig?: BufferConfig,           // opinionated defaults below
+  baggagePropagation?: BaggagePropagationConfig, // default: suppress all outbound
   logger?: OpinionatedLogger,                    // default: console
 })
 ```
@@ -145,6 +146,44 @@ opinionatedTelemetryInit({
   },
 })
 ```
+
+#### `baggagePropagation`
+
+By default, OpenTelemetry's `W3CBaggagePropagator` injects **all** baggage entries into a `baggage` HTTP header on every outgoing request — including requests to third-party APIs. This means any data you set as baggage (request headers, user IDs, tokens) can silently leak to external services.
+
+opinionated-telemetry ships a `FilteredBaggagePropagator` that **suppresses all outbound baggage by default**. Inbound baggage extraction always works — this only affects what gets sent on outgoing requests.
+
+To allow baggage propagation to specific internal services:
+
+```ts
+opinionatedTelemetryInit({
+  // ...
+  baggagePropagation: {
+    // Only propagate baggage to these hosts
+    allowedHosts: [
+      '*.internal.example.com', // wildcard subdomain match
+      'partner-api.trusted.com', // exact match
+    ],
+    // Only propagate these baggage keys (required — omit or [] to block all)
+    allowedKeys: [
+      'requestId',
+      'app.*', // wildcard prefix match
+      // '*',   // uncomment to allow all keys
+    ],
+  },
+})
+```
+
+| Option         | Description                                                                                                                  |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `allowedHosts` | Host patterns where baggage is propagated. Supports exact match and `*.domain.com` wildcards. Default: `[]` (suppress all)   |
+| `allowedKeys`  | Baggage key patterns to include. Supports exact match, `prefix.*` wildcards, and `*` for all keys. Default: `[]` (block all) |
+
+**How host matching works:** The propagator reads `server.address` from the active client span (set by `instrumentation-http` before injection). If there's no active span or no `server.address` attribute, baggage is suppressed (safe fallback).
+
+> **Note:** If the `OTEL_PROPAGATORS` environment variable is set, NodeSDK ignores the filtered propagator and uses the env-configured propagators instead. A warning is logged when this happens.
+
+The `FilteredBaggagePropagator` class is also exported for standalone use if you need to configure propagators manually.
 
 ### Span Aggregation
 
@@ -508,6 +547,8 @@ app.use(
 | `baggageQueryParams` | Subset of `captureQueryParams` to also propagate as baggage                                                                   |
 | `requestHook`        | Custom hook with `setAttribute` and `setAsBaggage` helpers for extracting additional request context (e.g. user ID from auth) |
 | `enabled`            | Enable/disable the middleware. Default: `true`                                                                                |
+
+> **Security:** `baggageHeaders` and `baggageQueryParams` values are propagated as OTel baggage. With the default `baggagePropagation` config, outbound baggage is suppressed. If you configure `allowedHosts`, be careful not to include sensitive headers (e.g. `authorization`, `cookie`) in `baggageHeaders` — they would be sent to those hosts in the `baggage` HTTP header.
 
 ### Knex
 

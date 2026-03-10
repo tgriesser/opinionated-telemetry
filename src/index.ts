@@ -11,6 +11,7 @@ export type {
 } from './filtering-span-processor.js'
 
 export { withBaggage, getBaggageValue } from './baggage.js'
+export { FilteredBaggagePropagator } from './filtered-baggage-propagator.js'
 
 export {
   sanitizeBinding,
@@ -34,5 +35,6 @@ export type {
   HeadSamplingConfig,
   TailSamplingConfig,
   BurstProtectionConfig,
+  BaggagePropagationConfig,
   TraceSummary,
 } from './types.js'

@@ -23,3 +23,5 @@
   - Ideas for capturing & archiving?
 
 - Explicit Span Transmission Failure handling
+
+- Suppress Tracing API

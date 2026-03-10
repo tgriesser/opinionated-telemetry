@@ -73,6 +73,22 @@ export interface OpinionatedLogger {
   warn: (message: string, ...args: any[]) => void
 }
 
+export interface BaggagePropagationConfig {
+  /**
+   * Host patterns where baggage should be propagated on outgoing requests.
+   * Supports exact matches and wildcard prefixes (e.g., '*.internal.example.com').
+   * If omitted or empty, baggage is never injected outbound (safe default).
+   */
+  allowedHosts?: string[]
+  /**
+   * Baggage key patterns that are safe to propagate outbound.
+   * Only entries matching these patterns are included.
+   * If omitted or empty, no baggage keys are propagated.
+   * Use '*' to allow all keys. Supports exact matches and wildcard prefixes (e.g., 'app.*').
+   */
+  allowedKeys?: string[]
+}
+
 export interface OpinionatedTelemetryConfig extends FilteringSpanProcessorConfig {
   serviceName: string
   resourceAttributes?: Record<string, string>
@@ -85,6 +101,11 @@ export interface OpinionatedTelemetryConfig extends FilteringSpanProcessorConfig
   additionalSpanProcessors?: SpanProcessor[]
   /** BatchSpanProcessor config overrides. Opinionated defaults: scheduledDelayMillis=2000, exportTimeoutMillis=10000 */
   batchProcessorConfig?: BufferConfig
+  /**
+   * Control which baggage entries are propagated on outgoing HTTP requests.
+   * Default: suppresses all outbound baggage injection (extract/inbound still works).
+   */
+  baggagePropagation?: BaggagePropagationConfig
 }
 
 export type AggregateGenericOption = 'uniq'
