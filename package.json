@@ -20,6 +20,11 @@
       "require": "./dist/cjs/opentelemetry-core.js",
       "types": "./dist/esm/opentelemetry-core.d.ts"
     },
+    "./opentelemetry-instrumentation": {
+      "import": "./dist/esm/opentelemetry-instrumentation.js",
+      "require": "./dist/cjs/opentelemetry-instrumentation.js",
+      "types": "./dist/esm/opentelemetry-instrumentation.d.ts"
+    },
     "./metrics": {
       "import": "./dist/esm/metrics.js",
       "require": "./dist/cjs/metrics.js",
