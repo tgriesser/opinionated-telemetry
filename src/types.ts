@@ -134,13 +134,31 @@ export interface AggregateConfig {
   attributes?: Record<string, AggregateAttributeConfig>
 }
 
+/**
+ * Return value from shouldDrop callback:
+ * - `true` or `'drop'` — drop the span, reparent children to grandparent (no attribute inheritance)
+ * - `'collapse'` — drop the span like collapse: inherit attributes into children, reparent to grandparent
+ * - `false` — keep the span and all buffered children
+ */
+export type ShouldDropFn = (
+  span: Span & ReadableSpan,
+  durationMs: number,
+) => boolean | 'drop' | 'collapse'
+
+export interface GlobalHooks {
+  /** Called on every span start. Return { shouldDrop } to register conditional dropping. */
+  onStart?: (span: Span & ReadableSpan) => { shouldDrop: ShouldDropFn } | void
+  /** Called on every span end, after enrichment. */
+  onEnd?: (span: Span & ReadableSpan, durationMs: number) => void
+}
+
 export interface OpinionatedOptions {
   /** Drop this span, merge its attributes into children, and reparent children to grandparent */
   collapse?: boolean
   /** Collapse parallel sibling spans with the same name into a single aggregate span */
   aggregate?: boolean | AggregateConfig
-  /** Custom onStart hook */
-  onStart?: (span: Span & ReadableSpan) => void
+  /** Custom onStart hook. Return { shouldDrop } to register conditional dropping. */
+  onStart?: (span: Span & ReadableSpan) => { shouldDrop: ShouldDropFn } | void
   /** Custom onEnd hook */
   onEnd?: (span: Span & ReadableSpan, durationMs: number) => void
 }

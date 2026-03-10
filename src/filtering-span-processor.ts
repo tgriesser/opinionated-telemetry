@@ -17,9 +17,11 @@ import debugLib from 'debug'
 import type {
   AggregateConfig,
   AggregateNumericOption,
+  GlobalHooks,
   OpinionatedLogger,
   OpinionatedOptions,
   SamplingConfig,
+  ShouldDropFn,
 } from './types.js'
 // Private import — used for instanceof checks and constructing snapshot spans.
 // Pinned to @opentelemetry/sdk-trace-base v2.x. If the SDK restructures its
@@ -126,13 +128,15 @@ export interface FilteringSpanProcessorConfig {
    */
   onDroppedSpan?: (
     span: ReadableSpan,
-    reason: 'head' | 'tail' | 'burst' | 'sync',
+    reason: 'head' | 'tail' | 'burst' | 'sync' | 'conditional',
     durationMs?: number,
   ) => void
   /** Predicate to determine if a span should be aggregated. Return true for default config, or an AggregateConfig object. */
   aggregateSpan?: (span: Span & ReadableSpan) => boolean | AggregateConfig
   /** Per-instrumentation hooks keyed by instrumentation scope name */
   instrumentationHooks?: Record<string, OpinionatedOptions>
+  /** Global hooks called for every span, regardless of instrumentation scope */
+  globalHooks?: GlobalHooks
   /** Logger for warnings. Default: console */
   logger?: OpinionatedLogger
 }
@@ -148,6 +152,17 @@ interface TailBufferEntry {
   flushed: boolean
   decidedRate: number
 }
+
+interface TraceCounts {
+  droppedSync: number
+  droppedConditional: number
+  droppedAggregated: number
+  sampledHead: number
+  sampledTail: number
+  sampledBurst: number
+}
+
+type TraceCountKey = keyof TraceCounts
 
 interface EmaState {
   rate: number
@@ -188,10 +203,14 @@ export class FilteringSpanProcessor implements SpanProcessor {
     null
   private _aggregateGroups = new Map<string, AggregateGroup>()
   private _instrumentationHooks: Record<string, OpinionatedOptions>
+  private _globalHooks: GlobalHooks | null = null
+  private _conditionalDropFns = new Map<string, ShouldDropFn>()
+  private _conditionalDropBuffer = new Map<string, ReadableSpan[]>()
+  private _traceCounts = new Map<string, TraceCounts>()
   private _onDroppedSpan:
     | ((
         span: ReadableSpan,
-        reason: 'head' | 'tail' | 'burst' | 'sync',
+        reason: 'head' | 'tail' | 'burst' | 'sync' | 'conditional',
         durationMs?: number,
       ) => void)
     | null = null
@@ -210,6 +229,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       aggregateSpan: config?.aggregateSpan,
     }
     this._instrumentationHooks = config?.instrumentationHooks ?? {}
+    this._globalHooks = config?.globalHooks ?? null
     this._logger = config?.logger ?? console
     const captureMemory = Boolean(
       this._config.memory || this._config.memoryDelta,
@@ -257,7 +277,8 @@ export class FilteringSpanProcessor implements SpanProcessor {
     if (
       this._sampling?.tail ||
       this._sampling?.burstProtection ||
-      config?.aggregateSpan
+      config?.aggregateSpan ||
+      this._globalHooks
     ) {
       this._samplingEvictionInterval = setInterval(
         () => this._evictSamplingState(),
@@ -353,8 +374,25 @@ export class FilteringSpanProcessor implements SpanProcessor {
           this._collapseSpans.set(span.spanContext().spanId, span)
         }
         if (opts.onStart) {
-          opts.onStart(span)
+          const result = opts.onStart(span)
+          if (result?.shouldDrop) {
+            this._conditionalDropFns.set(
+              span.spanContext().spanId,
+              result.shouldDrop,
+            )
+          }
         }
+      }
+    }
+
+    // Global hooks
+    if (this._globalHooks?.onStart) {
+      const result = this._globalHooks.onStart(span)
+      if (result?.shouldDrop) {
+        this._conditionalDropFns.set(
+          span.spanContext().spanId,
+          result.shouldDrop,
+        )
       }
     }
 
@@ -413,13 +451,14 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
     // Drop sync spans
     if (this._config.dropSyncSpans) {
-      const shouldDrop =
+      const shouldDropSync =
         typeof this._config.dropSyncSpans === 'function'
           ? this._config.dropSyncSpans(span as Span & ReadableSpan)
           : (span as any)[TICK_KEY] === this._currentTick
-      if (shouldDrop) {
+      if (shouldDropSync) {
         debug('dropping sync span: %s', span.name)
         this._onDroppedSpan?.(span, 'sync')
+        this._incrementTraceCount(span.spanContext().traceId, 'droppedSync')
         return
       }
     }
@@ -443,39 +482,43 @@ export class FilteringSpanProcessor implements SpanProcessor {
       if (shouldDropSpan) {
         this._collapseSpans.delete(span.spanContext().spanId)
         debug('dropping collapsed span: %s', span.name)
+        // Step 4a: If collapsed span also had conditional drop, flush its buffer
+        if (this._conditionalDropFns.has(span.spanContext().spanId)) {
+          this._conditionalDropFns.delete(span.spanContext().spanId)
+          const buffered =
+            this._conditionalDropBuffer.get(span.spanContext().spanId) ?? []
+          this._conditionalDropBuffer.delete(span.spanContext().spanId)
+          for (const child of buffered) {
+            // Reparent to grandparent (the collapse target)
+            // @ts-expect-error — readonly, reparenting buffered child
+            child['parentSpanContext'] = span.parentSpanContext
+            this._finishSpan(child)
+          }
+        }
         return
       }
     }
 
-    // Aggregation — consume non-error spans, let error spans fall through
-    const aggregateKey = (span as any)[AGGREGATE_KEY] as string | undefined
-    if (aggregateKey) {
-      const group = this._aggregateGroups.get(aggregateKey)
-      if (group) {
-        const handled = this._handleAggregateSpan(span, group, aggregateKey)
-        if (handled) return // non-error span consumed by aggregation
-        // error span falls through to normal export path
+    const spanId = span.spanContext().spanId
+
+    // Step 4b: Buffer check — if parent has conditional drop, buffer this span
+    if (span.parentSpanContext) {
+      const parentSpanId = span.parentSpanContext.spanId
+      if (this._conditionalDropFns.has(parentSpanId)) {
+        let buf = this._conditionalDropBuffer.get(parentSpanId)
+        if (!buf) {
+          buf = []
+          this._conditionalDropBuffer.set(parentSpanId, buf)
+        }
+        buf.push(span)
+        return
       }
     }
 
-    if (this._didShutdown) {
-      this._onSpanAfterShutdown(span as Span & ReadableSpan)
-      return
-    }
+    // Step 4c: Conditional drop decision — if this span has shouldDrop
+    if (this._processConditionalDrop(span)) return
 
-    // Stuck span snapshots bypass sampling entirely
-    if (span.attributes[OPIN_TEL_INTERNAL.stuck.isSnapshot]) {
-      this._wrapped.onEnd(span)
-      return
-    }
-
-    // Sampling
-    if (this._sampling) {
-      this._applySampling(span as Span & ReadableSpan, isSpanImpl)
-      return
-    }
-
-    this._wrapped.onEnd(span)
+    this._finishSpan(span)
   }
 
   shutdown(): Promise<void> {
@@ -489,6 +532,16 @@ export class FilteringSpanProcessor implements SpanProcessor {
       clearInterval(this._samplingEvictionInterval)
       this._samplingEvictionInterval = null
     }
+    // Flush conditional drop buffers (no decision = keep all)
+    for (const [spanId, buffered] of this._conditionalDropBuffer) {
+      for (const child of buffered) {
+        this._wrapped.onEnd(child)
+      }
+    }
+    this._conditionalDropFns.clear()
+    this._conditionalDropBuffer.clear()
+    this._traceCounts.clear()
+
     // Flush incomplete aggregate groups
     for (const [key, group] of this._aggregateGroups) {
       this._emitAggregateSpan(key, group)
@@ -533,6 +586,123 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
   forceFlush(): Promise<void> {
     return this._wrapped.forceFlush()
+  }
+
+  /**
+   * Evaluate and process conditional drop for a span.
+   * Returns true if the span was dropped (caller should return), false if span should continue.
+   */
+  private _processConditionalDrop(span: ReadableSpan): boolean {
+    const spanId = span.spanContext().spanId
+    const dropFn = this._conditionalDropFns.get(spanId)
+    if (!dropFn) return false
+
+    this._conditionalDropFns.delete(spanId)
+    const durationMs = this._spanDurationMs(span)
+    const result = dropFn(span as Span & ReadableSpan, durationMs)
+    const buffered = this._conditionalDropBuffer.get(spanId) ?? []
+    this._conditionalDropBuffer.delete(spanId)
+
+    if (!result) {
+      // Keep: flush buffered children, caller continues with this span
+      for (const child of buffered) {
+        this._finishSpan(child)
+      }
+      return false
+    }
+
+    // Drop (true/'drop') or collapse ('collapse')
+    const inheritAttrs = result === 'collapse'
+
+    for (const child of buffered) {
+      const isChildImpl = child instanceof SpanImpl
+      if (isChildImpl) {
+        ;(child as SpanImpl)['_ended'] = false
+      }
+      if (inheritAttrs) {
+        for (const [key, val] of Object.entries(span.attributes)) {
+          if (!(child as ReadableSpan).attributes[key] && val != null) {
+            ;(child as Span & ReadableSpan).setAttribute(key, val)
+          }
+        }
+      }
+      // @ts-expect-error — readonly, reparenting buffered child
+      child['parentSpanContext'] = span.parentSpanContext
+      if (isChildImpl) {
+        ;(child as SpanImpl)['_ended'] = true
+      }
+      // If new parent also has conditional drop, re-buffer
+      const newParentId = (child as ReadableSpan).parentSpanContext?.spanId
+      if (newParentId && this._conditionalDropFns.has(newParentId)) {
+        let parentBuf = this._conditionalDropBuffer.get(newParentId)
+        if (!parentBuf) {
+          parentBuf = []
+          this._conditionalDropBuffer.set(newParentId, parentBuf)
+        }
+        parentBuf.push(child)
+      } else {
+        this._finishSpan(child)
+      }
+    }
+
+    this._onDroppedSpan?.(span, 'conditional', durationMs)
+    this._incrementTraceCount(span.spanContext().traceId, 'droppedConditional')
+    debug('dropping conditional span: %s', span.name)
+    return true
+  }
+
+  /**
+   * Finish a span: conditional drop check → aggregation → shutdown check → stuck bypass → sampling → export.
+   * Used for both normal span endings and flushing conditional buffers.
+   */
+  private _finishSpan(span: ReadableSpan): void {
+    // Check if this span itself has a conditional drop fn (e.g. nested buffered child)
+    if (this._processConditionalDrop(span)) return
+
+    // Aggregation — consume non-error spans, let error spans fall through
+    const aggregateKey = (span as any)[AGGREGATE_KEY] as string | undefined
+    if (aggregateKey) {
+      const group = this._aggregateGroups.get(aggregateKey)
+      if (group) {
+        const handled = this._handleAggregateSpan(span, group, aggregateKey)
+        if (handled) return
+      }
+    }
+
+    if (this._didShutdown) {
+      this._onSpanAfterShutdown(span as Span & ReadableSpan)
+      return
+    }
+
+    // Stuck span snapshots bypass sampling entirely
+    if (span.attributes[OPIN_TEL_INTERNAL.stuck.isSnapshot]) {
+      this._wrapped.onEnd(span)
+      return
+    }
+
+    // Sampling
+    if (this._sampling) {
+      this._applySampling(span as Span & ReadableSpan, span instanceof SpanImpl)
+      return
+    }
+
+    this._wrapped.onEnd(span)
+  }
+
+  private _incrementTraceCount(traceId: string, kind: TraceCountKey): void {
+    let counts = this._traceCounts.get(traceId)
+    if (!counts) {
+      counts = {
+        droppedSync: 0,
+        droppedConditional: 0,
+        droppedAggregated: 0,
+        sampledHead: 0,
+        sampledTail: 0,
+        sampledBurst: 0,
+      }
+      this._traceCounts.set(traceId, counts)
+    }
+    counts[kind]++
   }
 
   private _resolveAggregateConfig(
@@ -617,6 +787,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     // Error spans with keepErrors fall through to normal export
     if (isError && keepErrors) return false
     // Everything else is consumed by aggregation
+    this._incrementTraceCount(span.spanContext().traceId, 'droppedAggregated')
     return true
   }
 
@@ -803,13 +974,20 @@ export class FilteringSpanProcessor implements SpanProcessor {
   }
 
   private _enrichSpan(span: Span & ReadableSpan): void {
+    const durationMs = hrTimeToMs(span.duration as HrTime)
+
     // Instrumentation hooks
     const scope = (span as any).instrumentationScope?.name
     if (scope) {
       const opts = this._instrumentationHooks[scope]
       if (opts?.onEnd) {
-        opts.onEnd(span, hrTimeToMs(span.duration as HrTime))
+        opts.onEnd(span, durationMs)
       }
+    }
+
+    // Global hooks onEnd
+    if (this._globalHooks?.onEnd) {
+      this._globalHooks.onEnd(span, durationMs)
     }
 
     // Memory delta for root spans
@@ -831,8 +1009,44 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
     // Collapse: attribute inheritance and child reparenting
     if (!span.parentSpanContext) {
+      const traceId = span.spanContext().traceId
       if (!span.attributes[OPIN_TEL_INTERNAL.stuck.isSnapshot]) {
-        this._rootSpans.delete(span.spanContext().traceId)
+        this._rootSpans.delete(traceId)
+        // Write drop/sampled counts to root span
+        const counts = this._traceCounts.get(traceId)
+        if (counts) {
+          if (counts.droppedSync > 0)
+            span.setAttribute(
+              OPIN_TEL_INTERNAL.dropped.syncCount,
+              counts.droppedSync,
+            )
+          if (counts.droppedConditional > 0)
+            span.setAttribute(
+              OPIN_TEL_INTERNAL.dropped.conditionalCount,
+              counts.droppedConditional,
+            )
+          if (counts.droppedAggregated > 0)
+            span.setAttribute(
+              OPIN_TEL_INTERNAL.dropped.aggregatedCount,
+              counts.droppedAggregated,
+            )
+          if (counts.sampledHead > 0)
+            span.setAttribute(
+              OPIN_TEL_INTERNAL.sampled.headCount,
+              counts.sampledHead,
+            )
+          if (counts.sampledTail > 0)
+            span.setAttribute(
+              OPIN_TEL_INTERNAL.sampled.tailCount,
+              counts.sampledTail,
+            )
+          if (counts.sampledBurst > 0)
+            span.setAttribute(
+              OPIN_TEL_INTERNAL.sampled.burstCount,
+              counts.sampledBurst,
+            )
+          this._traceCounts.delete(traceId)
+        }
       }
     } else {
       const parentSpanId = (span as any).parentSpanContext.spanId
@@ -886,6 +1100,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
               finalRate,
             )
             this._onDroppedSpan?.(span, 'tail', this._spanDurationMs(span))
+            this._incrementTraceCount(traceId, 'sampledTail')
             return
           }
           this._setSpanAttr(span, isSpanImpl, 'SampleRate', finalRate)
@@ -996,6 +1211,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
           finalRate,
         )
         this._onDroppedSpan?.(span, 'head')
+        this._incrementTraceCount(traceId, 'sampledHead')
         return
       }
 
@@ -1019,6 +1235,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
           burstRate,
         )
         this._onDroppedSpan?.(span, 'burst', this._spanDurationMs(span))
+        this._incrementTraceCount(traceId, 'sampledBurst')
         return
       }
       this._setSpanAttr(span, isSpanImpl, 'SampleRate', burstRate)
@@ -1075,6 +1292,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
           this._onDroppedSpan(buffered, 'tail', this._spanDurationMs(buffered))
         }
       }
+      this._incrementTraceCount(traceId, 'sampledTail')
       return
     }
     debug(
@@ -1152,6 +1370,26 @@ export class FilteringSpanProcessor implements SpanProcessor {
           entry.decidedRate = entry.mustKeep ? 1 : entry.headSampleRate
           entry.flushed = true
           this._flushTailEntry(traceId, entry)
+        }
+      }
+    }
+
+    // Evict stale conditional drop entries (leaked spans no longer in _allSpans)
+    for (const [spanId, _dropFn] of this._conditionalDropFns) {
+      // Check if the span is still active
+      let found = false
+      for (const s of this._allSpans) {
+        if (s.spanContext().spanId === spanId) {
+          found = true
+          break
+        }
+      }
+      if (!found) {
+        this._conditionalDropFns.delete(spanId)
+        const buffered = this._conditionalDropBuffer.get(spanId) ?? []
+        this._conditionalDropBuffer.delete(spanId)
+        for (const child of buffered) {
+          this._wrapped.onEnd(child)
         }
       }
     }

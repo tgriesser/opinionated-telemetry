@@ -36,6 +36,16 @@ export const OPIN_TEL_INTERNAL = {
     function: `${prefix}code.function`,
     filename: `${prefix}code.filename`,
   },
+  dropped: {
+    syncCount: `${prefix}dropped.sync_count`,
+    conditionalCount: `${prefix}dropped.conditional_count`,
+    aggregatedCount: `${prefix}dropped.aggregated_count`,
+  },
+  sampled: {
+    headCount: `${prefix}sampled.head_count`,
+    tailCount: `${prefix}sampled.tail_count`,
+    burstCount: `${prefix}sampled.burst_count`,
+  },
   agg: {
     count: `${prefix}agg.count`,
     errorCount: `${prefix}agg.error_count`,

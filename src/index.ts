@@ -37,4 +37,6 @@ export type {
   BurstProtectionConfig,
   BaggagePropagationConfig,
   TraceSummary,
+  GlobalHooks,
+  ShouldDropFn,
 } from './types.js'

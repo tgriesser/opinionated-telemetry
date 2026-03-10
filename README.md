@@ -16,6 +16,7 @@ Best suited for & meant use with [Honeycomb.io](https://www.honeycomb.io/). Virt
 - **Stuck span detection**: detects in-flight spans exceeding a threshold and exports early "diagnostic" span snapshots, so you can understand what might be broken sooner (long queries, hung requests, etc.)
 - **Sync span dropping**: automatically drops "synchronous" spans that are start and end in the same tick by default, configurable to allow for keeping specific spans e.g. keeping sync spans > `100ms`, or spans with a certain name, etc.
 - **Span collapsing**: allows us to drop intermediate spans (e.g. knex, graphql) and merge their attributes into child spans. No use having both a `knex` span that has a single nested `pg` or `mysql` span underneath, unless there is an error in the `knex` span or something
+- **Conditional span dropping**: tail-based conditional dropping with child buffering — register a `shouldDrop` callback at span start, evaluate at span end based on duration/error/attributes, with automatic child reparenting. Supports both simple drop (no attribute inheritance) and collapse mode (inherit attributes into children)
 - **Baggage propagation**: propagates baggage entries as span attributes on all child spans by default, with outbound baggage suppressed to prevent leaking sensitive data to external APIs (opt-in allowlisting by host and key)
 - **Memory & Memory delta tracking**: captures RSS (or detailed heap, configurable) memory & memory deltas on root spans.
 - **Auto-instrumentation**: [opt-in hooks](#auto-instrumentation) wraps exported async functions from your own codebase with auto-spans based on the function or method name, configured via `ESM` or `Module._load` patching
@@ -81,9 +82,10 @@ opinionatedTelemetryInit({
   onSpanAfterShutdown?: (span) => void,              // default: logger.warn
   shutdownSignal?: string,                           // default: 'SIGTERM'
   aggregateSpan?: (span) => boolean | AggregateConfig, // default: undefined
-  onDroppedSpan?: (span, reason, durationMs?) => void, // called on sampled-out spans
+  onDroppedSpan?: (span, reason, durationMs?) => void, // called on dropped/sampled spans
   instrumentations: Instrumentation[],
   instrumentationHooks?: Record<string, OpinionatedOptions>,
+  globalHooks?: GlobalHooks,                         // hooks for all spans
   additionalSpanProcessors?: SpanProcessor[],
   batchProcessorConfig?: BufferConfig | false,    // false disables batching
   baggagePropagation?: BaggagePropagationConfig, // default: suppress all outbound
@@ -310,14 +312,98 @@ Options per hook:
 
 - `collapse` — drop this span, merge attrs into children, reparent children to grandparent
 - `aggregate` — `true` or an `AggregateConfig` to collapse parallel sibling spans into a single aggregate
-- `onStart(span)` — called during span start; use `span.updateName()` to rename, `span.setAttribute()` to enrich, etc.
+- `onStart(span)` — called during span start; use `span.updateName()` to rename, `span.setAttribute()` to enrich. Can return `{ shouldDrop }` to register [conditional span dropping](#conditional-span-dropping)
 - `onEnd(span, durationMs)` — called during span end (before export); `durationMs` is the span duration in milliseconds. Same span mutation APIs available
 
 A warning is logged (via `console.warn` by default) if any hook key doesn't match a registered instrumentation name. Pass a custom `logger` to redirect or suppress these warnings.
 
+### `globalHooks`
+
+Global hooks that fire for every span, regardless of instrumentation scope. Useful for cross-cutting concerns like conditional span dropping based on span attributes.
+
+```ts
+opinionatedTelemetryInit({
+  // ...
+  globalHooks: {
+    onStart: (span) => {
+      // Called on every span start
+      // Can return { shouldDrop } to register conditional dropping
+    },
+    onEnd: (span, durationMs) => {
+      // Called on every span end, after enrichment
+    },
+  },
+})
+```
+
+Both `globalHooks.onStart` and `instrumentationHooks[scope].onStart` can return `{ shouldDrop }` to register conditional span dropping — see below.
+
+### Conditional Span Dropping
+
+Tail-based conditional span dropping allows you to register a `shouldDrop` callback at span start, then decide whether to drop the span when it ends — based on duration, error status, or any other span data.
+
+Child spans are buffered while waiting for the parent's decision. When a span is dropped, its children are reparented to the grandparent. When kept, all buffered children are flushed normally.
+
+Register via `globalHooks.onStart` or `instrumentationHooks[scope].onStart`:
+
+```ts
+opinionatedTelemetryInit({
+  // ...
+  globalHooks: {
+    onStart: (span) => {
+      // Drop pg-pool.connect spans unless they're slow or errored
+      if (span.name === 'pg-pool.connect') {
+        return {
+          shouldDrop: (span, durationMs) => {
+            if (span.status.code === SpanStatusCode.ERROR) return false // keep errors
+            if (durationMs > 50) return false // keep slow connections
+            return true // drop fast, successful connections
+          },
+        }
+      }
+    },
+  },
+})
+```
+
+#### `shouldDrop` return values
+
+The `shouldDrop` callback returns a value controlling how the span is dropped:
+
+| Return value | Behavior                                                                               |
+| ------------ | -------------------------------------------------------------------------------------- |
+| `false`      | Keep the span and all buffered children                                                |
+| `true`       | Drop the span, reparent children to grandparent (no attribute inheritance)             |
+| `'collapse'` | Drop the span like collapse: inherit attributes into children, reparent to grandparent |
+
+`true` is the default drop mode — children are reparented but don't inherit the dropped span's attributes. Use `'collapse'` when the dropped span has useful context that should flow down to children (similar to the `collapse` instrumentation hook option).
+
+#### Nested conditional drops
+
+When multiple ancestors have `shouldDrop` registered, decisions cascade: if a parent is dropped, its reparented children wait for the next ancestor's decision before being flushed. This works correctly with any combination of `true` and `'collapse'` return values.
+
+#### Interaction with collapse
+
+If a span has both `collapse: true` (from instrumentation hooks) and a `shouldDrop` callback, collapse takes priority. The conditional buffer is flushed with reparenting to the collapse target.
+
+### Trace Counters
+
+Root spans automatically receive counter attributes tracking drops and sampling decisions within their trace:
+
+| Attribute                            | Description                           |
+| ------------------------------------ | ------------------------------------- |
+| `opin_tel.dropped.sync_count`        | Spans dropped by sync span detection  |
+| `opin_tel.dropped.conditional_count` | Spans dropped by conditional dropping |
+| `opin_tel.dropped.aggregated_count`  | Spans consumed by aggregation         |
+| `opin_tel.sampled.head_count`        | Spans dropped by head sampling        |
+| `opin_tel.sampled.tail_count`        | Spans dropped by tail sampling        |
+| `opin_tel.sampled.burst_count`       | Spans dropped by burst protection     |
+
+Counters are best-effort — they reflect drops that occurred before the root span ended. Only non-zero counters are written.
+
 ### `FilteringSpanProcessor`
 
-Span processor that handles sync span dropping, baggage propagation, span collapsing, instrumentation hooks, and custom lifecycle hooks. Used internally by `opinionatedTelemetryInit` but can be used standalone. Accepts `instrumentationHooks` in its config.
+Span processor that handles sync span dropping, baggage propagation, span collapsing, conditional dropping, instrumentation hooks, and custom lifecycle hooks. Used internally by `opinionatedTelemetryInit` but can be used standalone. Accepts `instrumentationHooks` and `globalHooks` in its config.
 
 ### Baggage utilities
 
@@ -502,14 +588,14 @@ When combined, rates compose multiplicatively. Tail overrides head for the base 
 
 ### `onDroppedSpan`
 
-Called whenever a span is dropped due to sync span dropping, sampling, or burst protection. Useful for writing sampled-out spans to a compressed ndjson file or other secondary storage for later retrieval.
+Called whenever a span is dropped due to sync span dropping, conditional dropping, sampling, or burst protection. Useful for writing sampled-out spans to a compressed ndjson file or other secondary storage for later retrieval.
 
 ```ts
 opinionatedTelemetryInit({
   // ...
   onDroppedSpan: (span, reason, durationMs) => {
-    // reason: 'head' | 'tail' | 'burst' | 'sync'
-    // durationMs: provided for 'tail' and 'burst' drops
+    // reason: 'head' | 'tail' | 'burst' | 'sync' | 'conditional'
+    // durationMs: provided for 'tail', 'burst', and 'conditional' drops
     droppedSpanLog.write(
       JSON.stringify({
         name: span.name,

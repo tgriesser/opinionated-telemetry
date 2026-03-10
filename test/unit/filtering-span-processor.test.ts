@@ -2286,4 +2286,546 @@ describe('FilteringSpanProcessor', () => {
       expect(agg!.attributes['opin_tel.agg.val.median']).toBe(25)
     })
   })
+
+  describe('conditional span dropping', () => {
+    it('drops span when shouldDrop returns true, reparents child without inheriting attributes', async () => {
+      const { provider, exporter, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        globalHooks: {
+          onStart: (span) => {
+            if (span.name === 'maybe-drop') {
+              return { shouldDrop: () => true }
+            }
+          },
+        },
+      })
+
+      const tracer = provider.getTracer('test')
+      const root = tracer.startSpan('root')
+      context.with(trace.setSpan(context.active(), root), () => {
+        const parent = tracer.startSpan('maybe-drop')
+        parent.setAttribute('parent.only', 'val')
+        context.with(trace.setSpan(context.active(), parent), () => {
+          const child = tracer.startSpan('child')
+          child.end()
+        })
+        parent.end()
+      })
+      root.end()
+      await shutdown()
+
+      exporter.assertSpanNotExists('maybe-drop')
+      const child = exporter.assertSpanExists('child')
+      // true = drop mode: no attribute inheritance
+      expect(child.attributes['parent.only']).toBeUndefined()
+      // Child reparented to root
+      expect(child.parentSpanContext?.spanId).toBe(root.spanContext().spanId)
+    })
+
+    it('keeps span and children when shouldDrop returns false', async () => {
+      const { provider, exporter, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        globalHooks: {
+          onStart: (span) => {
+            if (span.name === 'maybe-drop') {
+              return { shouldDrop: () => false }
+            }
+          },
+        },
+      })
+
+      const tracer = provider.getTracer('test')
+      const root = tracer.startSpan('root')
+      context.with(trace.setSpan(context.active(), root), () => {
+        const parent = tracer.startSpan('maybe-drop')
+        context.with(trace.setSpan(context.active(), parent), () => {
+          const child = tracer.startSpan('child')
+          child.end()
+        })
+        parent.end()
+      })
+      root.end()
+      await shutdown()
+
+      exporter.assertSpanExists('maybe-drop')
+      exporter.assertSpanExists('child')
+    })
+
+    it('passes correct durationMs to shouldDrop', async () => {
+      let capturedDurationMs = 0
+      const { provider, exporter, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        globalHooks: {
+          onStart: (span) => {
+            if (span.name === 'timed-span') {
+              return {
+                shouldDrop: (_span, durationMs) => {
+                  capturedDurationMs = durationMs
+                  return false
+                },
+              }
+            }
+          },
+        },
+      })
+
+      const tracer = provider.getTracer('test')
+      const span = tracer.startSpan('timed-span')
+      await new Promise((r) => setTimeout(r, 10))
+      span.end()
+      await shutdown()
+
+      expect(capturedDurationMs).toBeGreaterThan(0)
+    })
+
+    it('collapse mode inherits attributes from dropped parent to children', async () => {
+      const { provider, exporter, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        globalHooks: {
+          onStart: (span) => {
+            if (span.name === 'collapse-me') {
+              return { shouldDrop: () => 'collapse' }
+            }
+          },
+        },
+      })
+
+      const tracer = provider.getTracer('test')
+      const root = tracer.startSpan('root')
+      context.with(trace.setSpan(context.active(), root), () => {
+        const parent = tracer.startSpan('collapse-me')
+        parent.setAttribute('from.parent', 'inherited')
+        parent.setAttribute('shared', 'parent-val')
+        context.with(trace.setSpan(context.active(), parent), () => {
+          const child = tracer.startSpan('child')
+          child.setAttribute('shared', 'child-val') // child's own value should win
+          child.end()
+        })
+        parent.end()
+      })
+      root.end()
+      await shutdown()
+
+      exporter.assertSpanNotExists('collapse-me')
+      const child = exporter.assertSpanExists('child')
+      expect(child.attributes['from.parent']).toBe('inherited')
+      expect(child.attributes['shared']).toBe('child-val') // child attr not overwritten
+    })
+
+    it('drop mode does not inherit attributes', async () => {
+      const { provider, exporter, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        globalHooks: {
+          onStart: (span) => {
+            if (span.name === 'drop-me') {
+              return { shouldDrop: () => true }
+            }
+          },
+        },
+      })
+
+      const tracer = provider.getTracer('test')
+      const root = tracer.startSpan('root')
+      context.with(trace.setSpan(context.active(), root), () => {
+        const parent = tracer.startSpan('drop-me')
+        parent.setAttribute('from.parent', 'should-not-inherit')
+        context.with(trace.setSpan(context.active(), parent), () => {
+          const child = tracer.startSpan('child')
+          child.end()
+        })
+        parent.end()
+      })
+      root.end()
+      await shutdown()
+
+      exporter.assertSpanNotExists('drop-me')
+      const child = exporter.assertSpanExists('child')
+      expect(child.attributes['from.parent']).toBeUndefined()
+      expect(child.parentSpanContext?.spanId).toBe(root.spanContext().spanId)
+    })
+
+    it('flushes multiple buffered children correctly', async () => {
+      const { provider, exporter, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        globalHooks: {
+          onStart: (span) => {
+            if (span.name === 'drop-parent') {
+              return { shouldDrop: () => 'drop' }
+            }
+          },
+        },
+      })
+
+      const tracer = provider.getTracer('test')
+      const root = tracer.startSpan('root')
+      context.with(trace.setSpan(context.active(), root), () => {
+        const parent = tracer.startSpan('drop-parent')
+        context.with(trace.setSpan(context.active(), parent), () => {
+          const c1 = tracer.startSpan('child-1')
+          c1.end()
+          const c2 = tracer.startSpan('child-2')
+          c2.end()
+          const c3 = tracer.startSpan('child-3')
+          c3.end()
+        })
+        parent.end()
+      })
+      root.end()
+      await shutdown()
+
+      exporter.assertSpanNotExists('drop-parent')
+      exporter.assertSpanExists('child-1')
+      exporter.assertSpanExists('child-2')
+      exporter.assertSpanExists('child-3')
+    })
+
+    it('handles nested conditional drops with collapse mode', async () => {
+      const { provider, exporter, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        globalHooks: {
+          onStart: (span) => {
+            if (span.name === 'outer-drop' || span.name === 'inner-drop') {
+              return { shouldDrop: () => 'collapse' }
+            }
+          },
+        },
+      })
+
+      const tracer = provider.getTracer('test')
+      const root = tracer.startSpan('root')
+      context.with(trace.setSpan(context.active(), root), () => {
+        const outer = tracer.startSpan('outer-drop')
+        outer.setAttribute('outer.attr', 'val')
+        context.with(trace.setSpan(context.active(), outer), () => {
+          const inner = tracer.startSpan('inner-drop')
+          inner.setAttribute('inner.attr', 'val')
+          context.with(trace.setSpan(context.active(), inner), () => {
+            const leaf = tracer.startSpan('leaf')
+            leaf.end()
+          })
+          inner.end()
+        })
+        outer.end()
+      })
+      root.end()
+      await shutdown()
+
+      exporter.assertSpanNotExists('outer-drop')
+      exporter.assertSpanNotExists('inner-drop')
+      const leaf = exporter.assertSpanExists('leaf')
+      // Leaf should be reparented to root (both parents dropped)
+      expect(leaf.parentSpanContext?.spanId).toBe(root.spanContext().spanId)
+      // Inherits attributes from both dropped ancestors (collapse mode)
+      expect(leaf.attributes['inner.attr']).toBe('val')
+      expect(leaf.attributes['outer.attr']).toBe('val')
+    })
+
+    it('handles nested conditional drops with drop mode (no inheritance)', async () => {
+      const { provider, exporter, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        globalHooks: {
+          onStart: (span) => {
+            if (span.name === 'outer-drop' || span.name === 'inner-drop') {
+              return { shouldDrop: () => true }
+            }
+          },
+        },
+      })
+
+      const tracer = provider.getTracer('test')
+      const root = tracer.startSpan('root')
+      context.with(trace.setSpan(context.active(), root), () => {
+        const outer = tracer.startSpan('outer-drop')
+        outer.setAttribute('outer.attr', 'val')
+        context.with(trace.setSpan(context.active(), outer), () => {
+          const inner = tracer.startSpan('inner-drop')
+          inner.setAttribute('inner.attr', 'val')
+          context.with(trace.setSpan(context.active(), inner), () => {
+            const leaf = tracer.startSpan('leaf')
+            leaf.end()
+          })
+          inner.end()
+        })
+        outer.end()
+      })
+      root.end()
+      await shutdown()
+
+      exporter.assertSpanNotExists('outer-drop')
+      exporter.assertSpanNotExists('inner-drop')
+      const leaf = exporter.assertSpanExists('leaf')
+      expect(leaf.parentSpanContext?.spanId).toBe(root.spanContext().spanId)
+      // No attribute inheritance in drop mode
+      expect(leaf.attributes['inner.attr']).toBeUndefined()
+      expect(leaf.attributes['outer.attr']).toBeUndefined()
+    })
+
+    it('collapse + conditional interaction: collapsed span under conditional parent', async () => {
+      const { provider, exporter, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        instrumentationHooks: {
+          'collapse-scope': { collapse: true },
+        },
+        globalHooks: {
+          onStart: (span) => {
+            if (span.name === 'conditional-parent') {
+              return { shouldDrop: () => true }
+            }
+          },
+        },
+      })
+
+      const normalTracer = provider.getTracer('test')
+      const collapseTracer = provider.getTracer('collapse-scope')
+
+      const root = normalTracer.startSpan('root')
+      context.with(trace.setSpan(context.active(), root), () => {
+        const cond = normalTracer.startSpan('conditional-parent')
+        context.with(trace.setSpan(context.active(), cond), () => {
+          const collapsed = collapseTracer.startSpan('collapsed-span')
+          collapsed.setAttribute('collapsed.attr', 'yes')
+          context.with(trace.setSpan(context.active(), collapsed), () => {
+            const leaf = normalTracer.startSpan('leaf')
+            leaf.end()
+          })
+          collapsed.end()
+        })
+        cond.end()
+      })
+      root.end()
+      await shutdown()
+
+      exporter.assertSpanNotExists('conditional-parent')
+      exporter.assertSpanNotExists('collapsed-span')
+      exporter.assertSpanExists('leaf')
+    })
+
+    it('conditional span that is also collapsed: collapse wins, buffer flushed', async () => {
+      const { provider, exporter, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        instrumentationHooks: {
+          'both-scope': {
+            collapse: true,
+            onStart: (span) => {
+              if (span.name === 'both-span') {
+                return { shouldDrop: () => true }
+              }
+            },
+          },
+        },
+      })
+
+      const normalTracer = provider.getTracer('test')
+      const bothTracer = provider.getTracer('both-scope')
+
+      const root = normalTracer.startSpan('root')
+      context.with(trace.setSpan(context.active(), root), () => {
+        const both = bothTracer.startSpan('both-span')
+        context.with(trace.setSpan(context.active(), both), () => {
+          const child = normalTracer.startSpan('child')
+          child.end()
+        })
+        both.end()
+      })
+      root.end()
+      await shutdown()
+
+      exporter.assertSpanNotExists('both-span')
+      // Child should still be exported (buffer flushed on collapse)
+      exporter.assertSpanExists('child')
+    })
+
+    it('fires onDroppedSpan with conditional reason', async () => {
+      const drops: Array<{ name: string; reason: string }> = []
+      const { provider, exporter, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        onDroppedSpan: (span, reason) => {
+          drops.push({ name: span.name, reason })
+        },
+        globalHooks: {
+          onStart: (span) => {
+            if (span.name === 'drop-me') {
+              return { shouldDrop: () => true }
+            }
+          },
+        },
+      })
+
+      const tracer = provider.getTracer('test')
+      const span = tracer.startSpan('drop-me')
+      span.end()
+      await shutdown()
+
+      expect(drops).toEqual([{ name: 'drop-me', reason: 'conditional' }])
+    })
+
+    it('writes drop counts on root spans', async () => {
+      const { provider, exporter, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        globalHooks: {
+          onStart: (span) => {
+            if (span.name === 'cond-drop') {
+              return { shouldDrop: () => true }
+            }
+          },
+        },
+      })
+
+      const tracer = provider.getTracer('test')
+      const root = tracer.startSpan('root')
+      context.with(trace.setSpan(context.active(), root), () => {
+        const d1 = tracer.startSpan('cond-drop')
+        d1.end()
+        const d2 = tracer.startSpan('cond-drop')
+        d2.end()
+      })
+      await nextTick()
+      root.end()
+      await shutdown()
+
+      const rootSpan = exporter.assertSpanExists('root')
+      expect(rootSpan.attributes['opin_tel.dropped.conditional_count']).toBe(2)
+    })
+
+    it('writes sync drop counts on root spans', async () => {
+      const { provider, exporter, shutdown } = createTestProvider({
+        dropSyncSpans: true,
+      })
+
+      const tracer = provider.getTracer('test')
+      const root = tracer.startSpan('root')
+      context.with(trace.setSpan(context.active(), root), () => {
+        const sync1 = tracer.startSpan('sync-child-1')
+        sync1.end()
+        const sync2 = tracer.startSpan('sync-child-2')
+        sync2.end()
+      })
+      await nextTick()
+      root.end()
+      await shutdown()
+
+      const rootSpan = exporter.assertSpanExists('root')
+      expect(rootSpan.attributes['opin_tel.dropped.sync_count']).toBe(2)
+    })
+
+    it('globalHooks.onStart and onEnd fire for all spans', async () => {
+      const started: string[] = []
+      const ended: Array<{ name: string; durationMs: number }> = []
+      const { provider, exporter, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        globalHooks: {
+          onStart: (span) => {
+            started.push(span.name)
+          },
+          onEnd: (span, durationMs) => {
+            ended.push({ name: span.name, durationMs })
+          },
+        },
+      })
+
+      const tracer = provider.getTracer('test')
+      const root = tracer.startSpan('root')
+      context.with(trace.setSpan(context.active(), root), () => {
+        const child = tracer.startSpan('child')
+        child.end()
+      })
+      root.end()
+      await shutdown()
+
+      expect(started).toContain('root')
+      expect(started).toContain('child')
+      expect(ended.map((e) => e.name)).toContain('root')
+      expect(ended.map((e) => e.name)).toContain('child')
+      for (const e of ended) {
+        expect(e.durationMs).toBeGreaterThanOrEqual(0)
+      }
+    })
+
+    it('instrumentationHooks.onStart returning shouldDrop works', async () => {
+      const { provider, exporter, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        instrumentationHooks: {
+          'hook-scope': {
+            onStart: (span) => {
+              if (span.name === 'hook-drop') {
+                return { shouldDrop: () => true }
+              }
+            },
+          },
+        },
+      })
+
+      const tracer = provider.getTracer('hook-scope')
+      const root = provider.getTracer('test').startSpan('root')
+      context.with(trace.setSpan(context.active(), root), () => {
+        const span = tracer.startSpan('hook-drop')
+        context.with(trace.setSpan(context.active(), span), () => {
+          const child = provider.getTracer('test').startSpan('child')
+          child.end()
+        })
+        span.end()
+      })
+      root.end()
+      await shutdown()
+
+      exporter.assertSpanNotExists('hook-drop')
+      exporter.assertSpanExists('child')
+    })
+
+    it('shutdown flushes buffered children', async () => {
+      const { provider, processor, exporter } = createTestProvider({
+        dropSyncSpans: false,
+        globalHooks: {
+          onStart: (span) => {
+            if (span.name === 'never-ends') {
+              return { shouldDrop: () => true }
+            }
+          },
+        },
+      })
+
+      const tracer = provider.getTracer('test')
+      const root = tracer.startSpan('root')
+      context.with(trace.setSpan(context.active(), root), () => {
+        const parent = tracer.startSpan('never-ends')
+        context.with(trace.setSpan(context.active(), parent), () => {
+          const child = tracer.startSpan('buffered-child')
+          child.end()
+        })
+        // parent never ends — children stuck in buffer
+      })
+      root.end()
+
+      // Shutdown should flush
+      await processor.shutdown()
+      await provider.forceFlush()
+
+      exporter.assertSpanExists('buffered-child')
+    })
+
+    it('leaf span with shouldDrop and no children', async () => {
+      const { provider, exporter, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        globalHooks: {
+          onStart: (span) => {
+            if (span.name === 'drop-leaf') {
+              return { shouldDrop: () => true }
+            }
+          },
+        },
+      })
+
+      const tracer = provider.getTracer('test')
+      const root = tracer.startSpan('root')
+      context.with(trace.setSpan(context.active(), root), () => {
+        const leaf = tracer.startSpan('drop-leaf')
+        leaf.end()
+      })
+      root.end()
+      await shutdown()
+
+      exporter.assertSpanNotExists('drop-leaf')
+      exporter.assertSpanExists('root')
+    })
+  })
 })
