@@ -1,5 +1,4 @@
 import {
-  InMemorySpanExporter,
   SimpleSpanProcessor,
   BasicTracerProvider,
 } from '@opentelemetry/sdk-trace-base'
@@ -7,6 +6,7 @@ import { context, propagation, trace } from '@opentelemetry/api'
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks'
 import { FilteringSpanProcessor } from '../src/filtering-span-processor.js'
 import type { FilteringSpanProcessorConfig } from '../src/filtering-span-processor.js'
+import { TestSpanExporter } from '../src/testing.js'
 
 /**
  * Set up a global context manager so startActiveSpan / getActiveSpan work.
@@ -19,7 +19,7 @@ export function setupOtel() {
 
 export function createTestProvider(config?: FilteringSpanProcessorConfig) {
   setupOtel()
-  const exporter = new InMemorySpanExporter()
+  const exporter = new TestSpanExporter()
   const inner = new SimpleSpanProcessor(exporter)
   const processor = new FilteringSpanProcessor(inner, config)
   const provider = new BasicTracerProvider({
@@ -31,7 +31,7 @@ export function createTestProvider(config?: FilteringSpanProcessorConfig) {
     processor,
     provider,
     tracer: provider.getTracer('test'),
-    getSpans: () => exporter.getFinishedSpans(),
+    getSpans: () => exporter.spans,
     reset: () => exporter.reset(),
     async shutdown() {
       await provider.forceFlush()
@@ -41,7 +41,7 @@ export function createTestProvider(config?: FilteringSpanProcessorConfig) {
 
 export function createSimpleProvider() {
   setupOtel()
-  const exporter = new InMemorySpanExporter()
+  const exporter = new TestSpanExporter()
   const provider = new BasicTracerProvider({
     spanProcessors: [new SimpleSpanProcessor(exporter)],
   })
@@ -49,7 +49,7 @@ export function createSimpleProvider() {
     tracer: provider.getTracer('test'),
     exporter,
     provider,
-    getSpans: () => exporter.getFinishedSpans(),
+    getSpans: () => exporter.spans,
     async shutdown() {
       await provider.forceFlush()
     },

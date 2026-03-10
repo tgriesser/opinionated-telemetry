@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest'
+import { SpanStatusCode } from '@opentelemetry/api'
 import { wrapFunction, wrapModuleExports } from '../../src/wrap-exports.js'
 import { createSimpleProvider, cleanupOtel } from '../helpers.js'
 
@@ -15,11 +16,11 @@ describe('wrapFunction', () => {
     const result = await wrapped(21)
     expect(result).toBe(42)
 
-    const spans = exporter.getFinishedSpans()
-    expect(spans.length).toBe(1)
-    expect(spans[0].name).toBe('myFunc')
-    expect(spans[0].attributes['opin_tel.code.function']).toBe('myFunc')
-    expect(spans[0].attributes['opin_tel.code.filename']).toBe('test/file')
+    exporter.assertTotalSpanCount(1)
+    exporter.assertSpanAttributes('myFunc', {
+      'opin_tel.code.function': 'myFunc',
+      'opin_tel.code.filename': 'test/file',
+    })
   })
 
   it('preserves function name', () => {
@@ -45,9 +46,9 @@ describe('wrapFunction', () => {
 
     await expect(wrapped()).rejects.toThrow('test error')
 
-    const spans = exporter.getFinishedSpans()
-    expect(spans[0].status.code).toBe(2) // ERROR
-    expect(spans[0].status.message).toBe('test error')
+    const span = exporter.assertSpanExists('failFn')
+    expect(span.status.code).toBe(SpanStatusCode.ERROR)
+    expect(span.status.message).toBe('test error')
   })
 
   it('records errors on sync throw', async () => {
@@ -59,8 +60,8 @@ describe('wrapFunction', () => {
 
     expect(() => wrapped()).toThrow('sync error')
 
-    const spans = exporter.getFinishedSpans()
-    expect(spans[0].status.code).toBe(2) // ERROR
+    const span = exporter.assertSpanExists('syncFail')
+    expect(span.status.code).toBe(SpanStatusCode.ERROR)
   })
 })
 
@@ -85,9 +86,8 @@ describe('wrapModuleExports', () => {
     const result = await exports.asyncFn()
     expect(result).toBe('hello')
 
-    const spans = exporter.getFinishedSpans()
-    expect(spans.length).toBe(1)
-    expect(spans[0].name).toBe('asyncFn')
+    exporter.assertTotalSpanCount(1)
+    exporter.assertSpanExists('asyncFn')
   })
 
   it('does not wrap sync functions', () => {
@@ -134,8 +134,7 @@ describe('wrapModuleExports', () => {
     wrapModuleExports(exports, 'handlers/foo', tracer)
     await exports.default()
 
-    const spans = exporter.getFinishedSpans()
-    expect(spans[0].name).toBe('myHandler')
+    exporter.assertSpanExists('myHandler')
   })
 
   it('does not trigger getters on module exports', () => {
@@ -190,9 +189,8 @@ describe('wrapFunction sync return', () => {
     const result = wrapped(5)
     expect(result).toBe(6)
 
-    const spans = exporter.getFinishedSpans()
-    expect(spans.length).toBe(1)
-    expect(spans[0].name).toBe('syncReturn')
+    exporter.assertTotalSpanCount(1)
+    exporter.assertSpanExists('syncReturn')
   })
 
   it('uses "anonymous" for unnamed functions', () => {

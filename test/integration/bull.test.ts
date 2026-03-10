@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { trace } from '@opentelemetry/api'
+import { trace, SpanStatusCode } from '@opentelemetry/api'
 import { otelInitBull } from '../../src/integrations/bull.js'
 import { cleanupOtel, createSimpleProvider } from '../helpers.js'
 
@@ -194,14 +194,12 @@ describe('otelInitBull', () => {
     expect(result).toBe('result')
 
     await provider.forceFlush()
-    const spans = exporter.getFinishedSpans()
-    const span = spans.find((s) => s.name === 'bull.process:test-queue')
-    expect(span).toBeDefined()
-    expect(span!.attributes['bull.job.id']).toBe('123')
-    expect(span!.attributes['bull.queue.name']).toBe('test-queue')
-    expect(span!.attributes['bull.job.attempts']).toBe(2)
-    expect(span!.links.length).toBe(1)
-    expect(span!.links[0].attributes!['link.source']).toBe('bull.add')
+    const span = exporter.assertSpanExists('bull.process:test-queue')
+    expect(span.attributes['bull.job.id']).toBe('123')
+    expect(span.attributes['bull.queue.name']).toBe('test-queue')
+    expect(span.attributes['bull.job.attempts']).toBe(2)
+    expect(span.links.length).toBe(1)
+    expect(span.links[0].attributes!['link.source']).toBe('bull.add')
 
     await provider.shutdown()
   })
@@ -233,10 +231,8 @@ describe('otelInitBull', () => {
     await expect(capturedProcessor(mockJob)).rejects.toThrow('job failed')
 
     await provider.forceFlush()
-    const spans = exporter.getFinishedSpans()
-    const span = spans.find((s) => s.name.startsWith('bull.process:'))
-    expect(span).toBeDefined()
-    expect(span!.status.code).toBe(2) // ERROR
+    const span = exporter.assertSpanExists(/^bull\.process:/)
+    expect(span.status.code).toBe(SpanStatusCode.ERROR)
 
     await provider.shutdown()
   })
@@ -266,8 +262,7 @@ describe('otelInitBull', () => {
     })
 
     await provider.forceFlush()
-    const spans = exporter.getFinishedSpans()
-    expect(spans.find((s) => s.name === 'bull.process:named-job')).toBeDefined()
+    exporter.assertSpanExists('bull.process:named-job')
 
     await provider.shutdown()
   })
@@ -294,11 +289,10 @@ describe('otelInitBull', () => {
     expect(result).toBe('done')
 
     await provider.forceFlush()
-    const spans = exporter.getFinishedSpans()
-    const span = spans.find((s) => s.name === 'onCompleted')
-    expect(span).toBeDefined()
-    expect(span!.attributes['bull.event']).toBe('completed')
-    expect(span!.attributes['bull.queue.name']).toBe('test-queue')
+    exporter.assertSpanAttributes('onCompleted', {
+      'bull.event': 'completed',
+      'bull.queue.name': 'test-queue',
+    })
 
     await provider.shutdown()
   })
@@ -324,10 +318,8 @@ describe('otelInitBull', () => {
     await expect(capturedHandler()).rejects.toThrow('handler error')
 
     await provider.forceFlush()
-    const spans = exporter.getFinishedSpans()
-    const span = spans.find((s) => s.name === 'onFailed')
-    expect(span).toBeDefined()
-    expect(span!.status.code).toBe(2) // ERROR
+    const span = exporter.assertSpanExists('onFailed')
+    expect(span.status.code).toBe(SpanStatusCode.ERROR)
 
     await provider.shutdown()
   })

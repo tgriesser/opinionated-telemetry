@@ -7,7 +7,7 @@ describe('FilteringSpanProcessor', () => {
 
   describe('sync span dropping', () => {
     it('drops spans that start and end in the same tick', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider()
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider()
 
       // Sync span — starts and ends in same tick
       const span = tracer.startSpan('sync-span')
@@ -22,13 +22,12 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const names = getSpans().map((s) => s.name)
-      expect(names).not.toContain('sync-span')
-      expect(names).toContain('async-span')
+      exporter.assertSpanNotExists('sync-span')
+      exporter.assertSpanExists('async-span')
     })
 
     it('keeps all spans when dropSyncSpans is false', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
       })
 
@@ -38,11 +37,11 @@ describe('FilteringSpanProcessor', () => {
       await nextTick()
       await shutdown()
 
-      expect(getSpans().map((s) => s.name)).toContain('sync-span')
+      exporter.assertSpanExists('sync-span')
     })
 
     it('supports custom dropSyncSpans function', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: (span) => span.name.startsWith('drop-'),
       })
 
@@ -54,15 +53,14 @@ describe('FilteringSpanProcessor', () => {
       await nextTick()
       await shutdown()
 
-      const names = getSpans().map((s) => s.name)
-      expect(names).not.toContain('drop-me')
-      expect(names).toContain('keep-me')
+      exporter.assertSpanNotExists('drop-me')
+      exporter.assertSpanExists('keep-me')
     })
   })
 
   describe('baggage to attributes', () => {
     it('propagates baggage entries as span attributes', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider()
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider()
 
       const baggage = propagation.createBaggage({
         'app.user': { value: 'user-123' },
@@ -80,14 +78,13 @@ describe('FilteringSpanProcessor', () => {
       await new Promise((r) => setTimeout(r, 10))
       await shutdown()
 
-      const span = getSpans().find((s) => s.name === 'with-baggage')
-      expect(span).toBeDefined()
-      expect(span!.attributes['app.user']).toBe('user-123')
-      expect(span!.attributes['app.team']).toBe('team-456')
+      const span = exporter.assertSpanExists('with-baggage')
+      expect(span.attributes['app.user']).toBe('user-123')
+      expect(span.attributes['app.team']).toBe('team-456')
     })
 
     it('skips baggage propagation when disabled', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         baggageToAttributes: false,
         dropSyncSpans: false,
       })
@@ -104,15 +101,14 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const span = getSpans().find((s) => s.name === 'no-baggage')
-      expect(span).toBeDefined()
-      expect(span!.attributes['app.user']).toBeUndefined()
+      const span = exporter.assertSpanExists('no-baggage')
+      expect(span.attributes['app.user']).toBeUndefined()
     })
   })
 
   describe('collapseing', () => {
     it('collapses child spans when instrumentation has collapse: true', async () => {
-      const { provider, getSpans, shutdown } = createTestProvider({
+      const { provider, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         instrumentationHooks: {
           'collapse-scope': { collapse: true },
@@ -142,22 +138,19 @@ describe('FilteringSpanProcessor', () => {
       grandparent.end()
       await shutdown()
 
-      const spans = getSpans()
-      const childSpan = spans.find((s) => s.name === 'child-span')
       // The collapse-target span should be dropped
-      const collapseSpan = spans.find((s) => s.name === 'collapse-target')
-      expect(collapseSpan).toBeUndefined()
+      exporter.assertSpanNotExists('collapse-target')
 
       // The child should have inherited the parent's attributes
-      expect(childSpan).toBeDefined()
-      expect(childSpan!.attributes['parent.attr']).toBe('from-parent')
-      expect(childSpan!.attributes['child.attr']).toBe('yes')
+      const childSpan = exporter.assertSpanExists('child-span')
+      expect(childSpan.attributes['parent.attr']).toBe('from-parent')
+      expect(childSpan.attributes['child.attr']).toBe('yes')
     })
   })
 
   describe('rename via hooks', () => {
     it('can rename span in onStart via updateName', async () => {
-      const { provider, getSpans, shutdown } = createTestProvider({
+      const { provider, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         instrumentationHooks: {
           '@test/rename-start': {
@@ -172,12 +165,11 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const found = getSpans().find((s) => s.name === 'prefixed:original')
-      expect(found).toBeDefined()
+      exporter.assertSpanExists('prefixed:original')
     })
 
     it('can rename span in onEnd via updateName', async () => {
-      const { provider, getSpans, shutdown } = createTestProvider({
+      const { provider, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         instrumentationHooks: {
           '@test/rename-end': {
@@ -192,8 +184,7 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const found = getSpans().find((s) => s.name === 'ended:will-rename')
-      expect(found).toBeDefined()
+      exporter.assertSpanExists('ended:will-rename')
     })
   })
 
@@ -246,7 +237,7 @@ describe('FilteringSpanProcessor', () => {
 
   describe('collapseing chain', () => {
     it('walks up a multi-level collapse chain', async () => {
-      const { provider, getSpans, shutdown } = createTestProvider({
+      const { provider, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         instrumentationHooks: {
           'collapse-a': { collapse: true },
@@ -281,21 +272,19 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const spans = getSpans()
       // Both collapse spans should be dropped
-      expect(spans.find((s) => s.name === 'collapse-a-span')).toBeUndefined()
-      expect(spans.find((s) => s.name === 'collapse-b-span')).toBeUndefined()
+      exporter.assertSpanNotExists('collapse-a-span')
+      exporter.assertSpanNotExists('collapse-b-span')
 
       // Child should exist and inherit attributes from the top of the collapse chain (spanA)
-      const child = spans.find((s) => s.name === 'deep-child')
-      expect(child).toBeDefined()
-      expect(child!.attributes['from.a']).toBe('yes')
+      const child = exporter.assertSpanExists('deep-child')
+      expect(child.attributes['from.a']).toBe('yes')
     })
   })
 
   describe('memoryDelta', () => {
     it('captures rss delta on root spans by default (fast path)', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider()
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider()
 
       const span = tracer.startSpan('root-span')
       await nextTick()
@@ -303,16 +292,13 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const root = getSpans().find((s) => s.name === 'root-span')
-      expect(root).toBeDefined()
-      expect(root!.attributes['opin_tel.memory_delta.rss']).toBeTypeOf('number')
-      expect(
-        root!.attributes['opin_tel.memory_delta.heap_used'],
-      ).toBeUndefined()
+      const root = exporter.assertSpanExists('root-span')
+      expect(root.attributes['opin_tel.memory_delta.rss']).toBeTypeOf('number')
+      expect(root.attributes['opin_tel.memory_delta.heap_used']).toBeUndefined()
     })
 
     it('captures specific fields when configured with object', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         memoryDelta: { heapUsed: true, rss: true },
       })
 
@@ -322,19 +308,18 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const root = getSpans().find((s) => s.name === 'root-span')
-      expect(root).toBeDefined()
-      expect(root!.attributes['opin_tel.memory_delta.heap_used']).toBeTypeOf(
+      const root = exporter.assertSpanExists('root-span')
+      expect(root.attributes['opin_tel.memory_delta.heap_used']).toBeTypeOf(
         'number',
       )
-      expect(root!.attributes['opin_tel.memory_delta.rss']).toBeTypeOf('number')
+      expect(root.attributes['opin_tel.memory_delta.rss']).toBeTypeOf('number')
       expect(
-        root!.attributes['opin_tel.memory_delta.heap_total'],
+        root.attributes['opin_tel.memory_delta.heap_total'],
       ).toBeUndefined()
     })
 
     it('does not capture memory when disabled', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         memoryDelta: false,
       })
 
@@ -344,16 +329,13 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const root = getSpans().find((s) => s.name === 'root-span')
-      expect(root).toBeDefined()
-      expect(root!.attributes['opin_tel.memory_delta.rss']).toBeUndefined()
-      expect(
-        root!.attributes['opin_tel.memory_delta.heap_used'],
-      ).toBeUndefined()
+      const root = exporter.assertSpanExists('root-span')
+      expect(root.attributes['opin_tel.memory_delta.rss']).toBeUndefined()
+      expect(root.attributes['opin_tel.memory_delta.heap_used']).toBeUndefined()
     })
 
     it('does not capture memory on child spans', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider()
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider()
 
       await tracer.startActiveSpan('root', async (root) => {
         const child = tracer.startSpan('child')
@@ -364,15 +346,14 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const child = getSpans().find((s) => s.name === 'child')
-      expect(child).toBeDefined()
-      expect(child!.attributes['opin_tel.memory_delta.rss']).toBeUndefined()
+      const child = exporter.assertSpanExists('child')
+      expect(child.attributes['opin_tel.memory_delta.rss']).toBeUndefined()
     })
   })
 
   describe('eventLoopUtilization', () => {
     it('captures elu.utilization on root spans by default', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider()
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider()
 
       const span = tracer.startSpan('root-span')
       await nextTick()
@@ -380,7 +361,7 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const root = getSpans().find((s) => s.name === 'root-span')
+      const root = exporter.findSpan('root-span')
       expect(root).toBeDefined()
       expect(root!.attributes['opin_tel.event_loop.utilization']).toBeTypeOf(
         'number',
@@ -391,7 +372,7 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('captures elu on child spans too', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider()
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider()
 
       await tracer.startActiveSpan('root', async (root) => {
         const child = tracer.startSpan('child')
@@ -402,7 +383,7 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const child = getSpans().find((s) => s.name === 'child')
+      const child = exporter.findSpan('child')
       expect(child).toBeDefined()
       expect(child!.attributes['opin_tel.event_loop.utilization']).toBeTypeOf(
         'number',
@@ -410,7 +391,7 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('captures only on root spans when set to root', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         eventLoopUtilization: 'root',
       })
 
@@ -423,13 +404,13 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const root = getSpans().find((s) => s.name === 'root')
+      const root = exporter.findSpan('root')
       expect(root).toBeDefined()
       expect(root!.attributes['opin_tel.event_loop.utilization']).toBeTypeOf(
         'number',
       )
 
-      const child = getSpans().find((s) => s.name === 'child')
+      const child = exporter.findSpan('child')
       expect(child).toBeDefined()
       expect(
         child!.attributes['opin_tel.event_loop.utilization'],
@@ -437,7 +418,7 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('does not capture elu when disabled', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         eventLoopUtilization: false,
       })
 
@@ -447,7 +428,7 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const root = getSpans().find((s) => s.name === 'root-span')
+      const root = exporter.findSpan('root-span')
       expect(root).toBeDefined()
       expect(
         root!.attributes['opin_tel.event_loop.utilization'],
@@ -459,7 +440,7 @@ describe('FilteringSpanProcessor', () => {
     it('detects and exports stuck span after threshold', async () => {
       vi.useFakeTimers()
 
-      const { tracer, getSpans, processor } = createTestProvider({
+      const { tracer, getSpans, processor, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: {
           thresholdMs: 100,
@@ -473,7 +454,7 @@ describe('FilteringSpanProcessor', () => {
       vi.advanceTimersByTime(150)
 
       await processor.forceFlush()
-      const spans = getSpans()
+      const spans = exporter.spans
       const stuck = spans.find((s) => s.name === 'slow-op (incomplete)')
       expect(stuck).toBeDefined()
       expect(stuck!.attributes['opin_tel.stuck.is_snapshot']).toBe(true)
@@ -492,7 +473,7 @@ describe('FilteringSpanProcessor', () => {
     it('does not re-report same stuck span', async () => {
       vi.useFakeTimers()
 
-      const { tracer, getSpans, processor } = createTestProvider({
+      const { tracer, getSpans, processor, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: {
           thresholdMs: 100,
@@ -508,10 +489,7 @@ describe('FilteringSpanProcessor', () => {
       vi.advanceTimersByTime(50)
 
       await processor.forceFlush()
-      const stuckSpans = getSpans().filter(
-        (s) => s.name === 'stuck-once (incomplete)',
-      )
-      expect(stuckSpans).toHaveLength(1)
+      exporter.assertSpanCount('stuck-once (incomplete)', 1)
 
       await processor.shutdown()
       vi.useRealTimers()
@@ -533,9 +511,7 @@ describe('FilteringSpanProcessor', () => {
       // Trigger stuck detection
       vi.advanceTimersByTime(150)
       await processor.forceFlush()
-      expect(
-        getSpans().find((s) => s.name === 'will-end (incomplete)'),
-      ).toBeDefined()
+      expect(exporter.findSpan('will-end (incomplete)')).toBeDefined()
 
       // End the real span and reset exporter
       span.end()
@@ -547,9 +523,7 @@ describe('FilteringSpanProcessor', () => {
       await processor.forceFlush()
 
       // Should get a new stuck report (the old span ID was cleaned up)
-      expect(
-        getSpans().find((s) => s.name === 'will-end (incomplete)'),
-      ).toBeDefined()
+      expect(exporter.findSpan('will-end (incomplete)')).toBeDefined()
 
       await processor.shutdown()
       vi.useRealTimers()
@@ -558,7 +532,7 @@ describe('FilteringSpanProcessor', () => {
     it('respects onStuckSpan returning false', async () => {
       vi.useFakeTimers()
 
-      const { tracer, getSpans, processor } = createTestProvider({
+      const { tracer, getSpans, processor, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: {
           thresholdMs: 100,
@@ -571,9 +545,7 @@ describe('FilteringSpanProcessor', () => {
       vi.advanceTimersByTime(150)
 
       await processor.forceFlush()
-      expect(
-        getSpans().find((s) => s.name === 'skip-me (incomplete)'),
-      ).toBeUndefined()
+      expect(exporter.findSpan('skip-me (incomplete)')).toBeUndefined()
 
       await processor.shutdown()
       vi.useRealTimers()
@@ -582,7 +554,7 @@ describe('FilteringSpanProcessor', () => {
     it('includes memory delta on stuck root span snapshot', async () => {
       vi.useFakeTimers()
 
-      const { tracer, getSpans, processor } = createTestProvider({
+      const { tracer, getSpans, processor, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: {
           thresholdMs: 100,
@@ -596,7 +568,7 @@ describe('FilteringSpanProcessor', () => {
       vi.advanceTimersByTime(150)
 
       await processor.forceFlush()
-      const stuck = getSpans().find((s) => s.name === 'stuck-root (incomplete)')
+      const stuck = exporter.findSpan('stuck-root (incomplete)')
       expect(stuck).toBeDefined()
       expect(stuck!.attributes['opin_tel.stuck.is_snapshot']).toBe(true)
       expect(stuck!.attributes['opin_tel.memory_delta.rss']).toBeTypeOf(
@@ -615,7 +587,7 @@ describe('FilteringSpanProcessor', () => {
 
       const onEnd = vi.fn()
 
-      const { provider, getSpans, processor } = createTestProvider({
+      const { provider, getSpans, processor, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: {
           thresholdMs: 100,
@@ -637,10 +609,7 @@ describe('FilteringSpanProcessor', () => {
       vi.advanceTimersByTime(150)
 
       await processor.forceFlush()
-      const stuck = getSpans().find(
-        (s) => s.name === 'enriched:stuck-hooked (incomplete)',
-      )
-      expect(stuck).toBeDefined()
+      exporter.assertSpanExists('enriched:stuck-hooked (incomplete)')
       expect(onEnd).toHaveBeenCalledOnce()
 
       await processor.shutdown()
@@ -722,7 +691,7 @@ describe('FilteringSpanProcessor', () => {
   describe('head sampling', () => {
     it('drops spans when head.sample returns rate > 1 and trace is not deterministically kept', async () => {
       // Use a very high rate so deterministic keep is extremely unlikely
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: false,
         sampling: {
@@ -741,11 +710,11 @@ describe('FilteringSpanProcessor', () => {
       await shutdown()
       // With rate 1M, the probability of keeping any single span is 1/1M
       // 20 spans means ~20/1M chance of any being kept — effectively 0
-      expect(getSpans().length).toBe(0)
+      exporter.assertTotalSpanCount(0)
     })
 
     it('keeps spans when head.sample returns 1', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: false,
         sampling: {
@@ -759,7 +728,7 @@ describe('FilteringSpanProcessor', () => {
       span.end()
 
       await shutdown()
-      expect(getSpans().map((s) => s.name)).toContain('always-keep')
+      exporter.assertSpanExists('always-keep')
     })
 
     it('sets SampleRate attribute on kept spans when rate > 1', async () => {
@@ -767,7 +736,7 @@ describe('FilteringSpanProcessor', () => {
 
       // We need to find a traceId that will be kept at rate=2
       // shouldKeep: (crc32(traceId) >>> 0) % rate === 0
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: false,
         sampling: {
@@ -784,7 +753,7 @@ describe('FilteringSpanProcessor', () => {
       }
 
       await shutdown()
-      const spans = getSpans()
+      const spans = exporter.spans
       // At rate=2, ~50% should be kept
       expect(spans.length).toBeGreaterThan(0)
       // All kept spans should have SampleRate=2
@@ -798,7 +767,7 @@ describe('FilteringSpanProcessor', () => {
 
       // Run twice with the same config and compare which spans are kept
       const run = async () => {
-        const { tracer, getSpans, shutdown } = createTestProvider({
+        const { tracer, getSpans, shutdown, exporter } = createTestProvider({
           dropSyncSpans: false,
           stuckSpanDetection: false,
           sampling: {
@@ -813,9 +782,7 @@ describe('FilteringSpanProcessor', () => {
         }
 
         await shutdown()
-        return getSpans()
-          .map((s) => s.spanContext().traceId)
-          .sort()
+        return exporter.spans.map((s) => s.spanContext().traceId).sort()
       }
 
       // Can't guarantee same traceIds across runs since they're random.
@@ -856,7 +823,7 @@ describe('FilteringSpanProcessor', () => {
 
   describe('head mustKeepSpan rescue', () => {
     it('rescues individual spans that match mustKeepSpan', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: false,
         sampling: {
@@ -878,13 +845,12 @@ describe('FilteringSpanProcessor', () => {
       root.end()
 
       await shutdown()
-      const names = getSpans().map((s) => s.name)
-      expect(names).toContain('important')
-      expect(names).not.toContain('normal-child')
+      exporter.assertSpanExists('important')
+      exporter.assertSpanNotExists('normal-child')
     })
 
     it('rescued spans are reparented to root', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: false,
         sampling: {
@@ -909,14 +875,14 @@ describe('FilteringSpanProcessor', () => {
       root.end()
 
       await shutdown()
-      const rescued = getSpans().find((s) => s.name === 'deep-important')
+      const rescued = exporter.findSpan('deep-important')
       expect(rescued).toBeDefined()
       // Rescued span should be reparented to root
       expect(rescued!.parentSpanContext?.spanId).toBe(rootSpanId)
     })
 
     it('rescued spans get SampleRate=1 and opin_tel.meta.incomplete_trace=true', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: false,
         sampling: {
@@ -935,14 +901,14 @@ describe('FilteringSpanProcessor', () => {
       root.end()
 
       await shutdown()
-      const rescued = getSpans().find((s) => s.name === 'rescue-me')
+      const rescued = exporter.findSpan('rescue-me')
       expect(rescued).toBeDefined()
       expect(rescued!.attributes['SampleRate']).toBe(1)
       expect(rescued!.attributes['opin_tel.meta.incomplete_trace']).toBe(true)
     })
 
     it('root span of rescued trace also gets exported with incomplete_trace=true', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: false,
         sampling: {
@@ -961,14 +927,14 @@ describe('FilteringSpanProcessor', () => {
       root.end()
 
       await shutdown()
-      const rootSpan = getSpans().find((s) => s.name === 'root')
+      const rootSpan = exporter.findSpan('root')
       expect(rootSpan).toBeDefined()
       expect(rootSpan!.attributes['SampleRate']).toBe(1)
       expect(rootSpan!.attributes['opin_tel.meta.incomplete_trace']).toBe(true)
     })
 
     it('non-matching spans in sampled-out trace are still dropped', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: false,
         sampling: {
@@ -991,18 +957,17 @@ describe('FilteringSpanProcessor', () => {
       root.end()
 
       await shutdown()
-      const names = getSpans().map((s) => s.name)
-      expect(names).toContain('keep-this')
-      expect(names).toContain('root') // root is rescued too
-      expect(names).not.toContain('drop-1')
-      expect(names).not.toContain('drop-2')
+      exporter.assertSpanExists('keep-this')
+      exporter.assertSpanExists('root') // root is rescued too
+      exporter.assertSpanNotExists('drop-1')
+      exporter.assertSpanNotExists('drop-2')
     })
   })
 
   describe('tail sampling', () => {
     it('buffers spans until root ends, then evaluates tail.sample', async () => {
       const sampleFn = vi.fn().mockReturnValue(1)
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: false,
         sampling: {
@@ -1019,20 +984,19 @@ describe('FilteringSpanProcessor', () => {
       })
 
       // Before root ends, no spans should be exported
-      expect(getSpans().length).toBe(0)
+      exporter.assertTotalSpanCount(0)
 
       root.end()
 
       await shutdown()
       // After root ends, all spans should be exported
-      const names = getSpans().map((s) => s.name)
-      expect(names).toContain('root')
-      expect(names).toContain('child')
+      exporter.assertSpanExists('root')
+      exporter.assertSpanExists('child')
       expect(sampleFn).toHaveBeenCalledOnce()
     })
 
     it('keeps all spans in trace when tail.sample returns 1', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: false,
         sampling: {
@@ -1052,11 +1016,11 @@ describe('FilteringSpanProcessor', () => {
       root.end()
 
       await shutdown()
-      expect(getSpans().length).toBe(6) // root + 5 children
+      exporter.assertTotalSpanCount(6) // root + 5 children
     })
 
     it('drops all spans when tail.sample returns rate > 1 and not kept', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: false,
         sampling: {
@@ -1074,12 +1038,12 @@ describe('FilteringSpanProcessor', () => {
       root.end()
 
       await shutdown()
-      expect(getSpans().length).toBe(0)
+      exporter.assertTotalSpanCount(0)
     })
 
     it('sets SampleRate on all exported spans', async () => {
       // Use rate=2 and create enough traces that some are kept
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: false,
         sampling: {
@@ -1099,7 +1063,7 @@ describe('FilteringSpanProcessor', () => {
       }
 
       await shutdown()
-      const spans = getSpans()
+      const spans = exporter.spans
       expect(spans.length).toBeGreaterThan(0)
       for (const s of spans) {
         expect(s.attributes['SampleRate']).toBe(2)
@@ -1108,7 +1072,7 @@ describe('FilteringSpanProcessor', () => {
 
     it('flushes with rate=1 when maxSpansPerTrace exceeded', async () => {
       const sampleFn = vi.fn().mockReturnValue(1_000_000)
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: false,
         sampling: {
@@ -1131,14 +1095,14 @@ describe('FilteringSpanProcessor', () => {
       // it should flush with rate=1 without waiting for root
       // Actually: maxSpansPerTrace check happens when spans.length >= maxSpans
       // The 5th span (child-4) triggers flush
-      const spansBeforeRoot = getSpans()
+      const spansBeforeRoot = exporter.spans
       expect(spansBeforeRoot.length).toBeGreaterThan(0)
 
       root.end()
       await shutdown()
 
       // All flushed spans should NOT have SampleRate set (rate=1 means no attribute)
-      const allSpans = getSpans()
+      const allSpans = exporter.spans
       for (const s of allSpans) {
         expect(s.attributes['SampleRate']).toBeUndefined()
       }
@@ -1148,7 +1112,7 @@ describe('FilteringSpanProcessor', () => {
 
     it('TraceSummary contains correct errorCount, hasError, durationMs, spanCount', async () => {
       const sampleFn = vi.fn().mockReturnValue(1)
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: false,
         sampling: {
@@ -1190,7 +1154,7 @@ describe('FilteringSpanProcessor', () => {
   describe('tail mustKeepSpan', () => {
     it('sets mustKeep flag when mustKeepSpan returns true', async () => {
       const sampleFn = vi.fn().mockReturnValue(1_000_000)
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: false,
         sampling: {
@@ -1212,7 +1176,7 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
       // Even though sample returns 1M, mustKeep clamps to 1
-      const spans = getSpans()
+      const spans = exporter.spans
       expect(spans.length).toBe(3) // root + critical + normal
       // Rate should be 1 (clamped), so no SampleRate attribute
       for (const s of spans) {
@@ -1222,7 +1186,7 @@ describe('FilteringSpanProcessor', () => {
 
     it('clamps final rate to 1 when mustKeep is set (even if tail.sample returns higher)', async () => {
       const sampleFn = vi.fn().mockReturnValue(50)
-      const { tracer, getSpans, processor } = createTestProvider({
+      const { tracer, getSpans, processor, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: false,
         sampling: {
@@ -1245,7 +1209,7 @@ describe('FilteringSpanProcessor', () => {
 
       // Verify the tail buffer entry had decidedRate=1
       // Since flushed, check the exported spans have no SampleRate (rate=1)
-      const spans = getSpans()
+      const spans = exporter.spans
       expect(spans.length).toBe(2)
       for (const s of spans) {
         expect(s.attributes['SampleRate']).toBeUndefined()
@@ -1257,7 +1221,7 @@ describe('FilteringSpanProcessor', () => {
 
   describe('burst protection', () => {
     it('does not throttle below rateThreshold', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: false,
         sampling: {
@@ -1273,13 +1237,13 @@ describe('FilteringSpanProcessor', () => {
       span.end()
 
       await shutdown()
-      const spans = getSpans()
+      const spans = exporter.spans
       expect(spans.length).toBe(1)
       expect(spans[0].attributes['SampleRate']).toBeUndefined()
     })
 
     it('throttles when rate exceeds threshold (sets SampleRate)', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: false,
         sampling: {
@@ -1299,7 +1263,7 @@ describe('FilteringSpanProcessor', () => {
       }
 
       await shutdown()
-      const spans = getSpans()
+      const spans = exporter.spans
 
       // Some spans should have been throttled (SampleRate set)
       const throttled = spans.filter(
@@ -1309,7 +1273,7 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('uses custom keyFn when provided', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: false,
         sampling: {
@@ -1334,7 +1298,7 @@ describe('FilteringSpanProcessor', () => {
       coldSpan.end()
 
       await shutdown()
-      const coldExported = getSpans().filter(
+      const coldExported = exporter.spans.filter(
         (s) => s.attributes['route'] === '/cold',
       )
       expect(coldExported.length).toBe(1)
@@ -1342,7 +1306,7 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('respects maxSampleRate cap', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: false,
         sampling: {
@@ -1361,7 +1325,7 @@ describe('FilteringSpanProcessor', () => {
       }
 
       await shutdown()
-      const spans = getSpans()
+      const spans = exporter.spans
 
       // All throttled spans should have SampleRate <= maxSampleRate
       for (const s of spans) {
@@ -1375,7 +1339,7 @@ describe('FilteringSpanProcessor', () => {
 
   describe('sampling composition', () => {
     it('head + burst: rates multiply (headRate x burstRate)', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: false,
         sampling: {
@@ -1397,7 +1361,7 @@ describe('FilteringSpanProcessor', () => {
       }
 
       await shutdown()
-      const spans = getSpans()
+      const spans = exporter.spans
 
       // Some spans may have SampleRate > 2 (headRate * burstRate)
       const withRate = spans.filter(
@@ -1413,7 +1377,7 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('tail + burst: rates multiply', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: false,
         sampling: {
@@ -1435,7 +1399,7 @@ describe('FilteringSpanProcessor', () => {
       }
 
       await shutdown()
-      const spans = getSpans()
+      const spans = exporter.spans
 
       // Some kept spans may have combined rate > 2
       const withRate = spans.filter(
@@ -1452,7 +1416,7 @@ describe('FilteringSpanProcessor', () => {
     it('stuck span snapshots bypass sampling entirely', async () => {
       vi.useFakeTimers()
 
-      const { tracer, getSpans, processor } = createTestProvider({
+      const { tracer, getSpans, processor, exporter } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: {
           thresholdMs: 100,
@@ -1469,12 +1433,9 @@ describe('FilteringSpanProcessor', () => {
       vi.advanceTimersByTime(150)
 
       await processor.forceFlush()
-      const stuck = getSpans().find(
-        (s) => s.name === 'stuck-sampled (incomplete)',
-      )
       // Stuck span snapshot should bypass sampling and be exported
-      expect(stuck).toBeDefined()
-      expect(stuck!.attributes['opin_tel.stuck.is_snapshot']).toBe(true)
+      const stuck = exporter.assertSpanExists('stuck-sampled (incomplete)')
+      expect(stuck.attributes['opin_tel.stuck.is_snapshot']).toBe(true)
 
       span.end()
       await processor.shutdown()
@@ -1485,7 +1446,7 @@ describe('FilteringSpanProcessor', () => {
   describe('tail buffer eviction', () => {
     it('evicts oldest entry when maxTraces exceeded', async () => {
       const sampleFn = vi.fn().mockReturnValue(1)
-      const { tracer, provider, processor, getSpans, shutdown } =
+      const { tracer, provider, processor, getSpans, shutdown, exporter } =
         createTestProvider({
           dropSyncSpans: false,
           stuckSpanDetection: false,
@@ -1512,7 +1473,7 @@ describe('FilteringSpanProcessor', () => {
       expect((processor as any)._tailBuffer.size).toBeLessThanOrEqual(3)
 
       // The evicted entries' child spans should have been flushed
-      const evictedSpans = getSpans()
+      const evictedSpans = exporter.spans
       expect(evictedSpans.length).toBeGreaterThan(0)
 
       // End remaining roots
@@ -1576,7 +1537,7 @@ describe('FilteringSpanProcessor', () => {
       })
 
       // Before shutdown, no spans exported (root hasn't ended)
-      expect(exporter.getFinishedSpans().length).toBe(0)
+      expect(exporter.spans.length).toBe(0)
 
       // Track exports via spy (shutdown clears InMemorySpanExporter)
       const exportedNames: string[] = []
@@ -1745,7 +1706,7 @@ describe('FilteringSpanProcessor', () => {
 
   describe('span aggregation', () => {
     it('aggregates multiple parallel spans with the same name under one parent', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         aggregateSpan: (span) => span.name === 'S3.GetObject',
       })
@@ -1762,7 +1723,7 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const spans = getSpans()
+      const spans = exporter.spans
       const s3Spans = spans.filter((s) => s.name === 'S3.GetObject')
 
       // Should be 1 aggregate span, not 5
@@ -1782,7 +1743,7 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('exports error spans individually and counts them in aggregate', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         aggregateSpan: (span) => span.name === 'db.query',
       })
@@ -1804,7 +1765,7 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const spans = getSpans()
+      const spans = exporter.spans
       const dbSpans = spans.filter((s) => s.name === 'db.query')
 
       // 1 aggregate + 1 error span exported individually
@@ -1825,7 +1786,7 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('exports single non-error span as-is without aggregate wrapper', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         aggregateSpan: (span) => span.name === 'cache.get',
       })
@@ -1840,7 +1801,7 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const spans = getSpans()
+      const spans = exporter.spans
       const cacheSpans = spans.filter((s) => s.name === 'cache.get')
 
       // Single span — no aggregate, just the original
@@ -1850,7 +1811,7 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('does not emit aggregate when all spans are errors', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         aggregateSpan: (span) => span.name === 'rpc.call',
       })
@@ -1870,7 +1831,7 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const spans = getSpans()
+      const spans = exporter.spans
       const rpcSpans = spans.filter((s) => s.name === 'rpc.call')
 
       // Both error spans exported individually, no aggregate
@@ -1882,7 +1843,7 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('works with per-instrumentation aggregate: true option', async () => {
-      const { provider, getSpans, shutdown } = createTestProvider({
+      const { provider, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         instrumentationHooks: {
           'test-dataloader': { aggregate: true },
@@ -1907,7 +1868,7 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const spans = getSpans()
+      const spans = exporter.spans
       const dlSpans = spans.filter((s) => s.name === 'dataloader.load')
 
       expect(dlSpans).toHaveLength(1)
@@ -1915,7 +1876,7 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('root spans never aggregate even if predicate matches', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         aggregateSpan: () => true,
       })
@@ -1927,7 +1888,7 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const spans = getSpans()
+      const spans = exporter.spans
       // Both root spans should be exported individually
       expect(spans.filter((s) => s.name === 'handler')).toHaveLength(2)
       spans.forEach((s) => {
@@ -1936,7 +1897,7 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('aggregate span has correct time bounds and duration stats', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         aggregateSpan: (span) => span.name === 'fetch',
       })
@@ -1954,7 +1915,7 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const spans = getSpans()
+      const spans = exporter.spans
       const agg = spans.find(
         (s) => s.attributes['opin_tel.agg.count'] !== undefined,
       )
@@ -2013,7 +1974,7 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('separate batches under same parent create separate aggregates', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         aggregateSpan: (span) => span.name === 'S3.GetObject',
       })
@@ -2040,7 +2001,7 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const spans = getSpans()
+      const spans = exporter.spans
       const s3Spans = spans.filter(
         (s) => s.attributes['opin_tel.agg.count'] !== undefined,
       )
@@ -2053,7 +2014,7 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('non-matching spans are not aggregated', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         aggregateSpan: (span) => span.name.startsWith('S3.'),
       })
@@ -2075,7 +2036,7 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const spans = getSpans()
+      const spans = exporter.spans
       expect(spans.filter((s) => s.name === 'S3.GetObject')).toHaveLength(1)
       expect(spans.filter((s) => s.name === 'db.query')).toHaveLength(1)
       expect(
@@ -2086,7 +2047,7 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('computes custom attribute stats with uniq option', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         aggregateSpan: (span) => {
           if (span.name !== 'redis.cmd') return false
@@ -2117,7 +2078,7 @@ describe('FilteringSpanProcessor', () => {
       root.end()
       await shutdown()
 
-      const agg = getSpans().find(
+      const agg = exporter.spans.find(
         (s) => s.attributes['opin_tel.meta.is_aggregate'],
       )
       expect(agg).toBeDefined()
@@ -2130,7 +2091,7 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('computes numeric attribute stats (min, max, avg, sum, range, median)', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         aggregateSpan: (span) => {
           if (span.name !== 'redis.cmd') return false
@@ -2161,7 +2122,7 @@ describe('FilteringSpanProcessor', () => {
       root.end()
       await shutdown()
 
-      const agg = getSpans().find(
+      const agg = exporter.spans.find(
         (s) => s.attributes['opin_tel.meta.is_aggregate'],
       )
       expect(agg).toBeDefined()
@@ -2174,7 +2135,7 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('computes count option for attribute frequency', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         aggregateSpan: (span) => {
           if (span.name !== 'fetch') return false
@@ -2205,7 +2166,7 @@ describe('FilteringSpanProcessor', () => {
       root.end()
       await shutdown()
 
-      const agg = getSpans().find(
+      const agg = exporter.spans.find(
         (s) => s.attributes['opin_tel.meta.is_aggregate'],
       )
       expect(agg).toBeDefined()
@@ -2214,7 +2175,7 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('per-scope aggregate config with attributes', async () => {
-      const { provider, getSpans, shutdown } = createTestProvider({
+      const { provider, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         instrumentationHooks: {
           'test-redis': {
@@ -2246,7 +2207,7 @@ describe('FilteringSpanProcessor', () => {
       root.end()
       await shutdown()
 
-      const agg = getSpans().find(
+      const agg = exporter.spans.find(
         (s) => s.attributes['opin_tel.meta.is_aggregate'],
       )
       expect(agg).toBeDefined()
@@ -2255,7 +2216,7 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('keepErrors: false consumes error spans into the aggregate', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         aggregateSpan: (span) => {
           if (span.name !== 'rpc.call') return false
@@ -2275,7 +2236,7 @@ describe('FilteringSpanProcessor', () => {
       root.end()
       await shutdown()
 
-      const spans = getSpans()
+      const spans = exporter.spans
       const rpcSpans = spans.filter((s) => s.name === 'rpc.call')
 
       // Both consumed into aggregate, no individual error span
@@ -2286,7 +2247,7 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('median with even number of values takes average of two middle', async () => {
-      const { tracer, getSpans, shutdown } = createTestProvider({
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider({
         dropSyncSpans: false,
         aggregateSpan: (span) => {
           if (span.name !== 'op') return false
@@ -2317,7 +2278,7 @@ describe('FilteringSpanProcessor', () => {
       root.end()
       await shutdown()
 
-      const agg = getSpans().find(
+      const agg = exporter.spans.find(
         (s) => s.attributes['opin_tel.meta.is_aggregate'],
       )
       expect(agg).toBeDefined()

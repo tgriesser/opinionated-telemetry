@@ -29,11 +29,10 @@ describe('otelCreateExpressMiddleware (real Express)', () => {
     await supertest(app).get('/api/test').expect(200)
     await provider.forceFlush()
 
-    const spans = exporter.getFinishedSpans()
-    const httpSpan = spans.find((s) => s.name === 'http')
-    expect(httpSpan).toBeDefined()
-    expect(httpSpan!.attributes['req.method']).toBe('GET')
-    expect(httpSpan!.attributes['req.path']).toBe('/api/test')
+    exporter.assertSpanAttributes('http', {
+      'req.method': 'GET',
+      'req.path': '/api/test',
+    })
   })
 
   it('captures allowlisted headers', async () => {
@@ -58,7 +57,7 @@ describe('otelCreateExpressMiddleware (real Express)', () => {
     await supertest(app).get('/test').set('x-request-id', 'req-123').expect(200)
     await provider.forceFlush()
 
-    const httpSpan = exporter.getFinishedSpans().find((s) => s.name === 'http')
+    const httpSpan = exporter.findSpan('http')
     expect(httpSpan!.attributes['req.header.x-request-id']).toBe('req-123')
     // authorization not in whitelist
     expect(httpSpan!.attributes['req.header.authorization']).toBeUndefined()
@@ -88,7 +87,7 @@ describe('otelCreateExpressMiddleware (real Express)', () => {
       .expect(200)
     await provider.forceFlush()
 
-    const httpSpan = exporter.getFinishedSpans().find((s) => s.name === 'http')
+    const httpSpan = exporter.findSpan('http')
     expect(httpSpan!.attributes['req.query.page']).toBe('2')
     expect(httpSpan!.attributes['req.query.search']).toBe('hello')
     expect(httpSpan!.attributes['req.query.secret']).toBeUndefined()
@@ -119,7 +118,7 @@ describe('otelCreateExpressMiddleware (real Express)', () => {
     await supertest(app).get('/test').expect(200)
     await provider.forceFlush()
 
-    const httpSpan = exporter.getFinishedSpans().find((s) => s.name === 'http')
+    const httpSpan = exporter.findSpan('http')
     expect(httpSpan!.attributes['custom.attr']).toBe('value')
     expect(httpSpan!.attributes['custom.baggage']).toBe('bagged')
   })
@@ -142,7 +141,7 @@ describe('otelCreateExpressMiddleware (real Express)', () => {
     await supertest(app).get('/test').expect(200)
     await provider.forceFlush()
 
-    const httpSpan = exporter.getFinishedSpans().find((s) => s.name === 'http')
+    const httpSpan = exporter.findSpan('http')
     expect(httpSpan!.attributes['req.method']).toBeUndefined()
   })
 

@@ -32,11 +32,8 @@ describe('otelInitKnex (real Knex + SQLite)', () => {
     })
 
     await provider.forceFlush()
-    const dbSpan = exporter
-      .getFinishedSpans()
-      .find((s) => s.name === 'db-query')
-    expect(dbSpan).toBeDefined()
-    expect(dbSpan!.attributes['db.connection.id']).toBeDefined()
+    const dbSpan = exporter.assertSpanExists('db-query')
+    expect(dbSpan.attributes['db.connection.id']).toBeDefined()
   })
 
   it('captures pool stats by default', async () => {
@@ -52,9 +49,7 @@ describe('otelInitKnex (real Knex + SQLite)', () => {
     })
 
     await provider.forceFlush()
-    const dbSpan = exporter
-      .getFinishedSpans()
-      .find((s) => s.name === 'db-query')
+    const dbSpan = exporter.findSpan('db-query')
     expect(dbSpan!.attributes['db.pool.used_count']).toBeDefined()
     expect(dbSpan!.attributes['db.pool.free_count']).toBeDefined()
   })
@@ -72,9 +67,7 @@ describe('otelInitKnex (real Knex + SQLite)', () => {
     })
 
     await provider.forceFlush()
-    const dbSpan = exporter
-      .getFinishedSpans()
-      .find((s) => s.name === 'db-query')
+    const dbSpan = exporter.findSpan('db-query')
     expect(dbSpan!.attributes['db.pool.used_count']).toBeUndefined()
   })
 
@@ -91,9 +84,7 @@ describe('otelInitKnex (real Knex + SQLite)', () => {
     })
 
     await provider.forceFlush()
-    const dbSpan = exporter
-      .getFinishedSpans()
-      .find((s) => s.name === 'db-query')
+    const dbSpan = exporter.findSpan('db-query')
     expect(dbSpan!.attributes['db.query.sanitized_bindings']).toBeDefined()
     expect(dbSpan!.attributes['db.query.hash']).toBeDefined()
   })
@@ -111,9 +102,7 @@ describe('otelInitKnex (real Knex + SQLite)', () => {
     })
 
     await provider.forceFlush()
-    const dbSpan = exporter
-      .getFinishedSpans()
-      .find((s) => s.name === 'db-query')
+    const dbSpan = exporter.findSpan('db-query')
     expect(dbSpan!.attributes['db.query.sanitized_bindings']).toBeUndefined()
     expect(dbSpan!.attributes['db.query.hash']).toBeUndefined()
   })
@@ -131,9 +120,7 @@ describe('otelInitKnex (real Knex + SQLite)', () => {
     })
 
     await provider.forceFlush()
-    const dbSpan = exporter
-      .getFinishedSpans()
-      .find((s) => s.name === 'db-query')
+    const dbSpan = exporter.findSpan('db-query')
     expect(dbSpan!.attributes['db.query.hash']).toBe('custom-hash')
   })
 
@@ -151,9 +138,7 @@ describe('otelInitKnex (real Knex + SQLite)', () => {
     })
 
     await provider.forceFlush()
-    const dbSpan = exporter
-      .getFinishedSpans()
-      .find((s) => s.name === 'db-query')
+    const dbSpan = exporter.findSpan('db-query')
     expect(dbSpan!.attributes['db.connection.id']).toBeUndefined()
   })
 
@@ -172,11 +157,8 @@ describe('otelInitKnex (real Knex + SQLite)', () => {
     })
 
     await provider.forceFlush()
-    const dbSpan = exporter
-      .getFinishedSpans()
-      .find((s) => s.name === 'tx-query')
-    expect(dbSpan).toBeDefined()
-    expect(dbSpan!.attributes['db.tx.id']).toBeDefined()
+    const dbSpan = exporter.assertSpanExists('tx-query')
+    expect(dbSpan.attributes['db.tx.id']).toBeDefined()
   })
 
   it('handles queries with various binding types', async () => {
@@ -192,11 +174,8 @@ describe('otelInitKnex (real Knex + SQLite)', () => {
     })
 
     await provider.forceFlush()
-    const dbSpan = exporter
-      .getFinishedSpans()
-      .find((s) => s.name === 'varied-bindings')
-    expect(dbSpan).toBeDefined()
-    const bindings = dbSpan!.attributes['db.query.sanitized_bindings'] as string
+    const dbSpan = exporter.assertSpanExists('varied-bindings')
+    const bindings = dbSpan.attributes['db.query.sanitized_bindings'] as string
     expect(bindings).toBeDefined()
     // String bindings should be sanitized to string<N>
     expect(bindings).toContain('string<')
@@ -215,9 +194,7 @@ describe('otelInitKnex (real Knex + SQLite)', () => {
     })
 
     await provider.forceFlush()
-    const dbSpan = exporter
-      .getFinishedSpans()
-      .find((s) => s.name === 'db-query')
+    const dbSpan = exporter.findSpan('db-query')
     const hash = dbSpan!.attributes['db.query.hash'] as string
     expect(hash).toMatch(/^[0-9a-f]{1,8}$/)
   })
@@ -237,9 +214,7 @@ describe('otelInitKnex (real Knex + SQLite)', () => {
     })
 
     await provider.forceFlush()
-    const dbSpan = exporter
-      .getFinishedSpans()
-      .find((s) => s.name === 'db-query')
+    const dbSpan = exporter.findSpan('db-query')
     expect(dbSpan!.attributes['db.query.sanitized_bindings']).toBe(
       'custom-sanitized',
     )
@@ -257,6 +232,6 @@ describe('otelInitKnex (real Knex + SQLite)', () => {
 
     await provider.forceFlush()
     // Should not throw, just silently skip
-    expect(exporter.getFinishedSpans().length).toBe(0)
+    exporter.assertTotalSpanCount(0)
   })
 })
