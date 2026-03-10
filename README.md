@@ -2,11 +2,11 @@
 
 We've thought a lot about Telemetry in Node.js, so you don't have to
 
-Opinionated OpenTelemetry patterns extracted from years of learnings from real-world o11y, to help Node.js projects eveywhere. Sensible defaults, tools, and hooks to help you cut out the noise and cost from default "instrument everything" implementations, and help you really drill down and understand what's most important.
+Opinionated OpenTelemetry patterns extracted from years of learnings from real-world o11y, to help Node.js projects eveywhere. Sensible defaults, tools, and hooks to cut out the noise and cost from default "instrument everything" implementations, and really drill down and understand what's most important.
 
 The defaults included may or may not be right for you, so be sure to read the options carefully. Comes with powerful hooks for sampling spans, dropping spans, collapsing intermediate spans, globally "auto-instrumenting" important bits of your own code, as well as some nice helpers for some libraries I've used in the past.
 
-Contributions & feedback are welcome, especially if you have ideas or other libraries with sensible default hooks that you'd liek to share.
+Contributions & feedback are welcome, especially if you have ideas or other libraries with sensible default hooks that you'd like to share.
 
 Best suited for & meant use with [Honeycomb.io](https://www.honeycomb.io/). Virtually unlimited attributes on a span for no additional cost is so powerful, I can't believe I don't hear its praises more often.
 

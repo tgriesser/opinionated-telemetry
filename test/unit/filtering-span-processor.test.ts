@@ -56,6 +56,88 @@ describe('FilteringSpanProcessor', () => {
       exporter.assertSpanNotExists('drop-me')
       exporter.assertSpanExists('keep-me')
     })
+
+    it('reparents async children of dropped sync spans', async () => {
+      const { tracer, exporter, shutdown } = createTestProvider()
+
+      const root = tracer.startSpan('root')
+      await nextTick()
+
+      context.with(trace.setSpan(context.active(), root), () => {
+        // Sync parent — will be dropped
+        const syncParent = tracer.startSpan('sync-parent')
+        context.with(trace.setSpan(context.active(), syncParent), () => {
+          // Start an async child under the sync parent
+          const asyncChild = tracer.startSpan('async-child')
+          // End the sync parent in the same tick (dropped)
+          syncParent.end()
+          // The async child crosses a tick boundary
+          setTimeout(() => asyncChild.end(), 5)
+        })
+      })
+
+      await new Promise((r) => setTimeout(r, 20))
+      root.end()
+      await shutdown()
+
+      exporter.assertSpanNotExists('sync-parent')
+      const child = exporter.assertSpanExists('async-child')
+      // Async child should be reparented to root (sync parent was dropped)
+      expect(child.parentSpanContext?.spanId).toBe(root.spanContext().spanId)
+    })
+
+    it('reparents through multiple dropped sync ancestors', async () => {
+      const { tracer, exporter, shutdown } = createTestProvider()
+
+      const root = tracer.startSpan('root')
+      await nextTick()
+
+      context.with(trace.setSpan(context.active(), root), () => {
+        const sync1 = tracer.startSpan('sync-1')
+        context.with(trace.setSpan(context.active(), sync1), () => {
+          const sync2 = tracer.startSpan('sync-2')
+          context.with(trace.setSpan(context.active(), sync2), () => {
+            const asyncChild = tracer.startSpan('async-child')
+            sync2.end()
+            setTimeout(() => asyncChild.end(), 5)
+          })
+          sync1.end()
+        })
+      })
+
+      await new Promise((r) => setTimeout(r, 20))
+      root.end()
+      await shutdown()
+
+      exporter.assertSpanNotExists('sync-1')
+      exporter.assertSpanNotExists('sync-2')
+      const child = exporter.assertSpanExists('async-child')
+      // Should walk up through both dropped sync spans to root
+      expect(child.parentSpanContext?.spanId).toBe(root.spanContext().spanId)
+    })
+
+    it('does not reparent sync children of dropped sync spans (both dropped)', async () => {
+      const { tracer, exporter, shutdown } = createTestProvider()
+
+      const root = tracer.startSpan('root')
+      await nextTick()
+
+      context.with(trace.setSpan(context.active(), root), () => {
+        const syncParent = tracer.startSpan('sync-parent')
+        context.with(trace.setSpan(context.active(), syncParent), () => {
+          const syncChild = tracer.startSpan('sync-child')
+          syncChild.end()
+        })
+        syncParent.end()
+      })
+
+      root.end()
+      await shutdown()
+
+      // Both sync spans should be dropped
+      exporter.assertSpanNotExists('sync-parent')
+      exporter.assertSpanNotExists('sync-child')
+    })
   })
 
   describe('baggage to attributes', () => {

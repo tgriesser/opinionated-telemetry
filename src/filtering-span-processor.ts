@@ -204,6 +204,10 @@ export class FilteringSpanProcessor implements SpanProcessor {
   private _aggregateGroups = new Map<string, AggregateGroup>()
   private _instrumentationHooks: Record<string, OpinionatedOptions>
   private _globalHooks: GlobalHooks | null = null
+  private _droppedSyncSpans = new Map<
+    string,
+    Map<string, SpanContext | undefined>
+  >()
   private _conditionalDropFns = new Map<string, ShouldDropFn>()
   private _conditionalDropBuffer = new Map<string, ReadableSpan[]>()
   private _traceCounts = new Map<string, TraceCounts>()
@@ -457,6 +461,13 @@ export class FilteringSpanProcessor implements SpanProcessor {
           : (span as any)[TICK_KEY] === this._currentTick
       if (shouldDropSync) {
         debug('dropping sync span: %s', span.name)
+        const traceId = span.spanContext().traceId
+        let traceDropped = this._droppedSyncSpans.get(traceId)
+        if (!traceDropped) {
+          traceDropped = new Map()
+          this._droppedSyncSpans.set(traceId, traceDropped)
+        }
+        traceDropped.set(span.spanContext().spanId, span.parentSpanContext)
         this._onDroppedSpan?.(span, 'sync')
         this._incrementTraceCount(span.spanContext().traceId, 'droppedSync')
         return
@@ -538,6 +549,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
         this._wrapped.onEnd(child)
       }
     }
+    this._droppedSyncSpans.clear()
     this._conditionalDropFns.clear()
     this._conditionalDropBuffer.clear()
     this._traceCounts.clear()
@@ -1047,6 +1059,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
             )
           this._traceCounts.delete(traceId)
         }
+        this._droppedSyncSpans.delete(traceId)
       }
     } else {
       const parentSpanId = (span as any).parentSpanContext.spanId
@@ -1076,6 +1089,21 @@ export class FilteringSpanProcessor implements SpanProcessor {
         if (!span.attributes[OPIN_TEL_INTERNAL.stuck.isSnapshot]) {
           // @ts-expect-error - readonly attribute, but we know what we're doing
           span['parentSpanContext'] = collapsedSpan.parentSpanContext
+        }
+      } else {
+        const traceDropped = this._droppedSyncSpans.get(
+          span.spanContext().traceId,
+        )
+        if (traceDropped?.has(parentSpanId)) {
+          // Reparent children of dropped sync spans to nearest live ancestor
+          let ancestor = traceDropped.get(parentSpanId)
+          while (ancestor && traceDropped.has(ancestor.spanId)) {
+            ancestor = traceDropped.get(ancestor.spanId)
+          }
+          if (!span.attributes[OPIN_TEL_INTERNAL.stuck.isSnapshot]) {
+            // @ts-expect-error - readonly attribute, reparenting to live ancestor
+            span['parentSpanContext'] = ancestor
+          }
         }
       }
     }
