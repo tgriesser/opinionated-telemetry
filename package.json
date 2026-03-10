@@ -16,9 +16,9 @@
       "types": "./dist/esm/opentelemetry-api.d.ts"
     },
     "./opentelemetry-core": {
-      "import": "./dist/esm/opentelemetry-api.js",
-      "require": "./dist/cjs/opentelemetry-api.js",
-      "types": "./dist/esm/opentelemetry-api.d.ts"
+      "import": "./dist/esm/opentelemetry-core.js",
+      "require": "./dist/cjs/opentelemetry-core.js",
+      "types": "./dist/esm/opentelemetry-core.d.ts"
     },
     "./metrics": {
       "import": "./dist/esm/metrics.js",
