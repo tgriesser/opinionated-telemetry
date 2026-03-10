@@ -119,6 +119,15 @@ export interface FilteringSpanProcessorConfig {
   stuckSpanDetection?: boolean | StuckSpanConfig
   /** Sampling configuration for head, tail, and burst protection. */
   sampling?: SamplingConfig
+  /**
+   * Called when a span is dropped due to sampling or burst protection.
+   * `durationMs` is provided for tail and burst drops (where the span has ended).
+   */
+  onDroppedSpan?: (
+    span: ReadableSpan,
+    reason: 'head' | 'tail' | 'burst',
+    durationMs?: number,
+  ) => void
   /** Predicate to determine if a span should be aggregated. Return true for default config, or an AggregateConfig object. */
   aggregateSpan?: (span: Span & ReadableSpan) => boolean | AggregateConfig
   /** Per-instrumentation hooks keyed by instrumentation scope name */
@@ -178,6 +187,13 @@ export class FilteringSpanProcessor implements SpanProcessor {
     null
   private _aggregateGroups = new Map<string, AggregateGroup>()
   private _instrumentationHooks: Record<string, OpinionatedOptions>
+  private _onDroppedSpan:
+    | ((
+        span: ReadableSpan,
+        reason: 'head' | 'tail' | 'burst',
+        durationMs?: number,
+      ) => void)
+    | null = null
   private _logger: OpinionatedLogger
 
   constructor(wrapped: SpanProcessor, config?: FilteringSpanProcessorConfig) {
@@ -233,6 +249,9 @@ export class FilteringSpanProcessor implements SpanProcessor {
     }
     if (config?.sampling) {
       this._sampling = config.sampling
+    }
+    if (config?.onDroppedSpan) {
+      this._onDroppedSpan = config.onDroppedSpan
     }
     if (
       this._sampling?.tail ||
@@ -864,6 +883,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
               span.name,
               finalRate,
             )
+            this._onDroppedSpan?.(span, 'tail', this._spanDurationMs(span))
             return
           }
           this._setSpanAttr(span, isSpanImpl, 'SampleRate', finalRate)
@@ -973,6 +993,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
           span.name,
           finalRate,
         )
+        this._onDroppedSpan?.(span, 'head')
         return
       }
 
@@ -995,6 +1016,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
           span.name,
           burstRate,
         )
+        this._onDroppedSpan?.(span, 'burst', this._spanDurationMs(span))
         return
       }
       this._setSpanAttr(span, isSpanImpl, 'SampleRate', burstRate)
@@ -1046,6 +1068,11 @@ export class FilteringSpanProcessor implements SpanProcessor {
         entry.spans.length,
         finalRate,
       )
+      if (this._onDroppedSpan) {
+        for (const buffered of entry.spans) {
+          this._onDroppedSpan(buffered, 'tail', this._spanDurationMs(buffered))
+        }
+      }
       return
     }
     debug(

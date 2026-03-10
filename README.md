@@ -6,7 +6,7 @@ Opinionated OpenTelemetry patterns extracted from years of learnings from real-w
 
 The defaults included may or may not be right for you, so be sure to read the options carefully. Comes with powerful hooks for sampling spans, dropping spans, collapsing intermediate spans, globally "auto-instrumenting" important bits of your own code, as well as some nice helpers for some libraries I've used in the past.
 
-Contributions & feedback are welcome, especially if you have other libraries you have sensible defaults for.
+Contributions & feedback are welcome, especially if you have ideas or other libraries with sensible default hooks that you'd liek to share.
 
 Best suited for & meant use with [Honeycomb.io](https://www.honeycomb.io/). Virtually unlimited attributes on a span for no additional cost is so powerful, I can't believe I don't hear its praises more often.
 
@@ -81,6 +81,7 @@ opinionatedTelemetryInit({
   onSpanAfterShutdown?: (span) => void,              // default: logger.warn
   shutdownSignal?: string,                           // default: 'SIGTERM'
   aggregateSpan?: (span) => boolean | AggregateConfig, // default: undefined
+  onDroppedSpan?: (span, reason, durationMs?) => void, // called on sampled-out spans
   instrumentations: Instrumentation[],
   instrumentationHooks?: Record<string, OpinionatedOptions>,
   additionalSpanProcessors?: SpanProcessor[],
@@ -451,6 +452,29 @@ opinionatedTelemetryInit({
 **Burst protection** uses an exponential moving average to detect per-key span rate spikes and automatically applies a sample rate when throughput exceeds the threshold. No manual rate configuration needed.
 
 When combined, rates compose multiplicatively. Tail overrides head for the base decision. `mustKeepSpan` always clamps the rate to 1. Kept spans receive a `SampleRate=N` attribute following the Honeycomb convention.
+
+### `onDroppedSpan`
+
+Called whenever a span is dropped due to sampling or burst protection. Useful for writing sampled-out spans to a compressed ndjson file or other secondary storage for later retrieval.
+
+```ts
+opinionatedTelemetryInit({
+  // ...
+  onDroppedSpan: (span, reason, durationMs) => {
+    // reason: 'head' | 'tail' | 'burst'
+    // durationMs: provided for 'tail' and 'burst' drops
+    droppedSpanLog.write(
+      JSON.stringify({
+        name: span.name,
+        traceId: span.spanContext().traceId,
+        reason,
+        attributes: span.attributes,
+        durationMs,
+      }) + '\n',
+    )
+  },
+})
+```
 
 ## Integration Helpers
 

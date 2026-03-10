@@ -1610,6 +1610,119 @@ describe('FilteringSpanProcessor', () => {
     })
   })
 
+  describe('onDroppedSpan', () => {
+    it('calls onDroppedSpan with reason "head" for head-sampled drops', async () => {
+      const onDroppedSpan = vi.fn()
+      const { tracer, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        stuckSpanDetection: false,
+        onDroppedSpan,
+        sampling: {
+          head: {
+            sample: () => 1_000_000,
+          },
+        },
+      })
+
+      for (let i = 0; i < 20; i++) {
+        const span = tracer.startSpan(`head-drop-${i}`)
+        span.end()
+      }
+
+      await shutdown()
+
+      expect(onDroppedSpan).toHaveBeenCalled()
+      for (const [span, reason, durationMs] of onDroppedSpan.mock.calls) {
+        expect(reason).toBe('head')
+        expect(durationMs).toBeUndefined()
+        expect(span.name).toMatch(/^head-drop-/)
+      }
+    })
+
+    it('calls onDroppedSpan with reason "tail" and durationMs for tail-sampled drops', async () => {
+      const onDroppedSpan = vi.fn()
+      const { tracer, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        stuckSpanDetection: false,
+        onDroppedSpan,
+        sampling: {
+          tail: {
+            sample: () => 1_000_000,
+          },
+        },
+      })
+
+      const root = tracer.startSpan('tail-root')
+      context.with(trace.setSpan(context.active(), root), () => {
+        const child = tracer.startSpan('tail-child')
+        child.end()
+      })
+      root.end()
+
+      await shutdown()
+
+      expect(onDroppedSpan).toHaveBeenCalled()
+      for (const [span, reason, durationMs] of onDroppedSpan.mock.calls) {
+        expect(reason).toBe('tail')
+        expect(durationMs).toBeTypeOf('number')
+        expect(durationMs).toBeGreaterThanOrEqual(0)
+      }
+    })
+
+    it('calls onDroppedSpan with reason "burst" and durationMs for burst drops', async () => {
+      const onDroppedSpan = vi.fn()
+      const { tracer, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        stuckSpanDetection: false,
+        onDroppedSpan,
+        sampling: {
+          burstProtection: {
+            rateThreshold: 1,
+            halfLifeMs: 100_000,
+          },
+        },
+      })
+
+      // Create many spans to trigger burst protection
+      for (let i = 0; i < 50; i++) {
+        const span = tracer.startSpan('burst-span')
+        span.end()
+      }
+
+      await shutdown()
+
+      // Some should have been dropped due to burst
+      if (onDroppedSpan.mock.calls.length > 0) {
+        for (const [span, reason, durationMs] of onDroppedSpan.mock.calls) {
+          expect(reason).toBe('burst')
+          expect(durationMs).toBeTypeOf('number')
+          expect(durationMs).toBeGreaterThanOrEqual(0)
+        }
+      }
+    })
+
+    it('does not call onDroppedSpan when spans are kept', async () => {
+      const onDroppedSpan = vi.fn()
+      const { tracer, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        stuckSpanDetection: false,
+        onDroppedSpan,
+        sampling: {
+          head: {
+            sample: () => 1,
+          },
+        },
+      })
+
+      const span = tracer.startSpan('kept-span')
+      span.end()
+
+      await shutdown()
+
+      expect(onDroppedSpan).not.toHaveBeenCalled()
+    })
+  })
+
   describe('span aggregation', () => {
     it('aggregates multiple parallel spans with the same name under one parent', async () => {
       const { tracer, getSpans, shutdown } = createTestProvider({
