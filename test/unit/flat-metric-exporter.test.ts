@@ -30,7 +30,7 @@ function makeGaugeMetric(
   return {
     descriptor: { name, description: '', unit: '', valueType: 0 },
     aggregationTemporality: AggregationTemporality.DELTA,
-    dataPointType: DataPointType.GAUGE,
+    dataPointType: DataPointType.GAUGE as DataPointType.GAUGE,
     dataPoints: [
       {
         startTime: [999, 0] as HrTime,

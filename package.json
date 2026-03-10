@@ -84,6 +84,7 @@
     "lint:deps": "knip",
     "prepare": "git config core.hooksPath .githooks",
     "test": "vitest run",
+    "test:typecheck": "tsc -p tsconfig.test.json",
     "test:watch": "vitest"
   },
   "dependencies": {
