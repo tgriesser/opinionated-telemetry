@@ -16,6 +16,7 @@ import { crc32 } from 'node:zlib'
 import debugLib from 'debug'
 import type {
   AggregateConfig,
+  AggregateNumericOption,
   OpinionatedLogger,
   OpinionatedOptions,
   SamplingConfig,
@@ -40,7 +41,7 @@ function hrTimeToMs(hr: HrTime): number {
 
 interface AttributeTracker {
   sourceAttribute: string
-  options: string[]
+  options: AggregateNumericOption[]
   values: (string | number | boolean)[]
 }
 

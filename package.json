@@ -97,12 +97,12 @@
     "@opentelemetry/sdk-node": "^0.213.0",
     "@opentelemetry/sdk-trace-base": "^2.6.0",
     "@opentelemetry/semantic-conventions": "^1.40.0",
-    "@types/debug": "^4.1.12",
     "debug": "^4.4.3"
   },
   "devDependencies": {
     "@opentelemetry/context-async-hooks": "^2.6.0",
     "@types/better-sqlite3": "^7.6.13",
+    "@types/debug": "^4.1.12",
     "@types/express": "^5.0.6",
     "@types/node": "^20.0.0",
     "@types/supertest": "^7.2.0",
