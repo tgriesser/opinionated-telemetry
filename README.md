@@ -312,7 +312,7 @@ Options per hook:
 
 - `collapse` — drop this span, merge attrs into children, reparent children to grandparent
 - `aggregate` — `true` or an `AggregateConfig` to collapse parallel sibling spans into a single aggregate
-- `onStart(span)` — called during span start; use `span.updateName()` to rename, `span.setAttribute()` to enrich. Can return `{ shouldDrop }` to register [conditional span dropping](#conditional-span-dropping)
+- `onStart(span)` — called during span start; use `span.updateName()` to rename, `span.setAttribute()` to enrich. Can return `{ collapse: true }` to collapse this specific span, or `{ shouldDrop }` to register [conditional span dropping](#conditional-span-dropping). If both are returned, `collapse` takes precedence.
 - `onEnd(span, durationMs)` — called during span end (before export); `durationMs` is the span duration in milliseconds. Same span mutation APIs available
 
 A warning is logged (via `console.warn` by default) if any hook key doesn't match a registered instrumentation name. Pass a custom `logger` to redirect or suppress these warnings.
@@ -327,6 +327,7 @@ opinionatedTelemetryInit({
   globalHooks: {
     onStart: (span) => {
       // Called on every span start
+      // Can return { collapse: true } for per-span collapsing
       // Can return { shouldDrop } to register conditional dropping
     },
     onEnd: (span, durationMs) => {
@@ -336,7 +337,7 @@ opinionatedTelemetryInit({
 })
 ```
 
-Both `globalHooks.onStart` and `instrumentationHooks[scope].onStart` can return `{ shouldDrop }` to register conditional span dropping — see below.
+Both `globalHooks.onStart` and `instrumentationHooks[scope].onStart` can return `{ collapse: true }` for per-span collapsing, or `{ shouldDrop }` to register conditional span dropping — see below.
 
 ### Conditional Span Dropping
 
@@ -384,7 +385,7 @@ When multiple ancestors have `shouldDrop` registered, decisions cascade: if a pa
 
 #### Interaction with collapse
 
-If a span has both `collapse: true` (from instrumentation hooks) and a `shouldDrop` callback, collapse takes priority. The conditional buffer is flushed with reparenting to the collapse target.
+If a span has both `collapse` and `shouldDrop` — whether from `instrumentationHooks[scope].collapse: true`, or from `onStart` returning both `{ collapse: true, shouldDrop }` — collapse takes priority and `shouldDrop` is ignored. The span is dropped immediately with attribute inheritance, and any conditional buffer is flushed with reparenting to the collapse target.
 
 ### Trace Counters
 
