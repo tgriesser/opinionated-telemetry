@@ -455,13 +455,13 @@ When combined, rates compose multiplicatively. Tail overrides head for the base 
 
 ### `onDroppedSpan`
 
-Called whenever a span is dropped due to sampling or burst protection. Useful for writing sampled-out spans to a compressed ndjson file or other secondary storage for later retrieval.
+Called whenever a span is dropped due to sync span dropping, sampling, or burst protection. Useful for writing sampled-out spans to a compressed ndjson file or other secondary storage for later retrieval.
 
 ```ts
 opinionatedTelemetryInit({
   // ...
   onDroppedSpan: (span, reason, durationMs) => {
-    // reason: 'head' | 'tail' | 'burst'
+    // reason: 'head' | 'tail' | 'burst' | 'sync'
     // durationMs: provided for 'tail' and 'burst' drops
     droppedSpanLog.write(
       JSON.stringify({

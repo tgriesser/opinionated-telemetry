@@ -1721,6 +1721,26 @@ describe('FilteringSpanProcessor', () => {
 
       expect(onDroppedSpan).not.toHaveBeenCalled()
     })
+
+    it('calls onDroppedSpan with reason "sync" for sync span drops', async () => {
+      const onDroppedSpan = vi.fn()
+      const { tracer, shutdown } = createTestProvider({
+        dropSyncSpans: true,
+        stuckSpanDetection: false,
+        onDroppedSpan,
+      })
+
+      const span = tracer.startSpan('sync-span')
+      span.end() // ends in the same tick → sync drop
+
+      await shutdown()
+
+      expect(onDroppedSpan).toHaveBeenCalledOnce()
+      const [droppedSpan, reason, durationMs] = onDroppedSpan.mock.calls[0]
+      expect(droppedSpan.name).toBe('sync-span')
+      expect(reason).toBe('sync')
+      expect(durationMs).toBeUndefined()
+    })
   })
 
   describe('span aggregation', () => {

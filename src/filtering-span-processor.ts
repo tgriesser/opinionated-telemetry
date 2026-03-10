@@ -125,7 +125,7 @@ export interface FilteringSpanProcessorConfig {
    */
   onDroppedSpan?: (
     span: ReadableSpan,
-    reason: 'head' | 'tail' | 'burst',
+    reason: 'head' | 'tail' | 'burst' | 'sync',
     durationMs?: number,
   ) => void
   /** Predicate to determine if a span should be aggregated. Return true for default config, or an AggregateConfig object. */
@@ -190,7 +190,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
   private _onDroppedSpan:
     | ((
         span: ReadableSpan,
-        reason: 'head' | 'tail' | 'burst',
+        reason: 'head' | 'tail' | 'burst' | 'sync',
         durationMs?: number,
       ) => void)
     | null = null
@@ -418,6 +418,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
           : (span as any)[TICK_KEY] === this._currentTick
       if (shouldDrop) {
         debug('dropping sync span: %s', span.name)
+        this._onDroppedSpan?.(span, 'sync')
         return
       }
     }
