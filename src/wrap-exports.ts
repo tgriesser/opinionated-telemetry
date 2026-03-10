@@ -99,11 +99,15 @@ export function wrapModuleExports(
     return exports
   }
 
-  const keys = Object.keys(exports)
+  const keys = Object.getOwnPropertyNames(exports)
   for (const key of keys) {
     if (key === '__esModule') continue
 
-    const value = exports[key]
+    const desc = Object.getOwnPropertyDescriptor(exports, key)
+    // Skip getters/setters to avoid triggering side effects
+    if (!desc || !('value' in desc)) continue
+
+    const value = desc.value
     if (typeof value !== 'function') continue
     if (value.constructor?.name !== 'AsyncFunction') continue
 

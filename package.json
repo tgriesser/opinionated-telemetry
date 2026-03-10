@@ -10,6 +10,16 @@
       "require": "./dist/cjs/index.js",
       "types": "./dist/esm/index.d.ts"
     },
+    "./opentelemetry-api": {
+      "import": "./dist/esm/opentelemetry-api.js",
+      "require": "./dist/cjs/opentelemetry-api.js",
+      "types": "./dist/esm/opentelemetry-api.d.ts"
+    },
+    "./opentelemetry-core": {
+      "import": "./dist/esm/opentelemetry-api.js",
+      "require": "./dist/cjs/opentelemetry-api.js",
+      "types": "./dist/esm/opentelemetry-api.d.ts"
+    },
     "./metrics": {
       "import": "./dist/esm/metrics.js",
       "require": "./dist/cjs/metrics.js",

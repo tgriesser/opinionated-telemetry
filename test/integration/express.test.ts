@@ -36,7 +36,7 @@ describe('otelCreateExpressMiddleware (real Express)', () => {
     expect(httpSpan!.attributes['req.path']).toBe('/api/test')
   })
 
-  it('captures whitelisted headers', async () => {
+  it('captures allowlisted headers', async () => {
     const { tracer, exporter, provider } = createSimpleProvider()
     const app = express()
 

@@ -138,6 +138,27 @@ describe('wrapModuleExports', () => {
     expect(spans[0].name).toBe('myHandler')
   })
 
+  it('does not trigger getters on module exports', () => {
+    const { tracer } = createSimpleProvider()
+    let getterCalled = false
+    const exports = Object.create(null)
+    Object.defineProperty(exports, 'lazyValue', {
+      get() {
+        getterCalled = true
+        return async function lazyFn() {}
+      },
+      enumerable: true,
+      configurable: true,
+    })
+    exports.normalFn = async function normalFn() {}
+
+    wrapModuleExports(exports, 'test/getters', tracer)
+
+    expect(getterCalled).toBe(false)
+    // The normal data property should still be wrapped
+    expect(exports.normalFn).not.toBe(async function normalFn() {})
+  })
+
   it('returns non-object exports unchanged', () => {
     const { tracer } = createSimpleProvider()
     expect(wrapModuleExports(null as any, 'x', tracer)).toBeNull()

@@ -1,5 +1,7 @@
 import { env } from 'node:process'
+
 export const OPIN_TEL_PREFIX = env.OPIN_TEL_PREFIX ?? 'opin_tel.'
+
 const prefix = OPIN_TEL_PREFIX
 
 export const OPIN_TEL_INTERNAL = {

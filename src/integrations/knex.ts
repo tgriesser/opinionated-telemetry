@@ -89,6 +89,8 @@ export function sanitizeBindings(bindings: any[]): string {
   return JSON.stringify(bindings.map(sanitizeBinding))
 }
 
+const hasInstrumentedKey = '__opin_tel_init'
+
 /**
  * Initializes knex query event listener that enriches active OTel spans
  * with connection ID, TX ID, pool stats, and sanitized bindings.
@@ -99,6 +101,11 @@ export function otelInitKnex(
   knexInstance: any,
   config?: KnexOtelConfig,
 ): () => void {
+  if (knexInstance[hasInstrumentedKey]) {
+    return () => {}
+  }
+  Object.defineProperty(knexInstance, hasInstrumentedKey, { value: true })
+
   const hashFn = config?.hashFn ?? defaultHash
   const sanitizeFn = config?.sanitizeBindingsFn ?? sanitizeBindings
   const captureBindings = config?.captureBindings ?? true
