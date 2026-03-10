@@ -94,6 +94,8 @@ export interface OpinionatedTelemetryConfig extends FilteringSpanProcessorConfig
   resourceAttributes?: Record<string, string>
   traceExporter: SpanExporter
   metricReader?: MetricReader
+  /** Enable @opentelemetry/host-metrics (CPU, memory, network). Only active when metricReader is set. Default: true */
+  hostMetrics?: boolean
   spanLimits?: SpanLimits
   /** Signal to register shutdown handler on. Default: 'SIGTERM' */
   shutdownSignal?: string

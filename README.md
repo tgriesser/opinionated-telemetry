@@ -72,6 +72,7 @@ opinionatedTelemetryInit({
   resourceAttributes?: Record<string, string>,
   traceExporter?: SpanExporter,
   metricReader?: MetricReader,
+  hostMetrics?: boolean,                              // default: true (requires metricReader)
   spanLimits?: SpanLimits,
   dropSyncSpans?: true | ((span) => boolean),        // default: true
   baggageToAttributes?: boolean,                     // default: true
@@ -94,6 +95,10 @@ opinionatedTelemetryInit({
 ```
 
 Returns `{ sdk, getTracer, shutdown }`.
+
+#### `hostMetrics`
+
+Enables `@opentelemetry/host-metrics` to collect system and process metrics (CPU, memory, network). Default: `true`, but only active when `metricReader` is provided. Set to `false` to disable.
 
 #### `memory`
 

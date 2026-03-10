@@ -11,6 +11,7 @@ import {
   CompositePropagator,
   W3CTraceContextPropagator,
 } from '@opentelemetry/core'
+import { HostMetrics } from '@opentelemetry/host-metrics'
 import { FilteringSpanProcessor } from './filtering-span-processor.js'
 import { FilteredBaggagePropagator } from './filtered-baggage-propagator.js'
 import type { OpinionatedTelemetryConfig } from './types.js'
@@ -39,6 +40,7 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     resourceAttributes = {},
     traceExporter,
     metricReader,
+    hostMetrics: hostMetricsEnabled = true,
     spanLimits = DEFAULT_SPAN_LIMITS,
     shutdownSignal = 'SIGTERM',
     instrumentations,
@@ -107,6 +109,12 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
   })
 
   sdk.start()
+
+  if (metricReader && hostMetricsEnabled) {
+    new HostMetrics().start()
+    debug('host metrics started')
+  }
+
   debug(
     'sdk started (dropSyncSpans=%s, baggageToAttributes=%s)',
     !!(processorConfig.dropSyncSpans ?? true),
