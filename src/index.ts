@@ -3,7 +3,6 @@ export { trace, context, propagation } from '@opentelemetry/api'
 
 export type { SpanExporter, BufferConfig } from '@opentelemetry/sdk-trace-base'
 export { opinionatedTelemetryInit } from './init.js'
-export { OpinionatedInstrumentation } from './opinionated-instrumentation.js'
 export { FilteringSpanProcessor } from './filtering-span-processor.js'
 export type {
   FilteringSpanProcessorConfig,
@@ -23,6 +22,7 @@ export { wrapModuleExports, wrapFunction } from './wrap-exports.js'
 
 export type {
   OpinionatedTelemetryConfig,
+  OpinionatedLogger,
   OpinionatedOptions,
   AggregateConfig,
   AggregateAttributeConfig,

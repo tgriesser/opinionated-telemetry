@@ -35,10 +35,7 @@ npm install opinionated-telemetry
 ## Quick start
 
 ```ts
-import {
-  opinionatedTelemetryInit,
-  OpinionatedInstrumentation,
-} from 'opinionated-telemetry'
+import { opinionatedTelemetryInit } from 'opinionated-telemetry'
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto'
 import { HttpInstrumentation } from '@opentelemetry/instrumentation-http'
 import { KnexInstrumentation } from '@opentelemetry/instrumentation-knex'
@@ -46,19 +43,19 @@ import { KnexInstrumentation } from '@opentelemetry/instrumentation-knex'
 const { sdk, getTracer, shutdown } = opinionatedTelemetryInit({
   serviceName: 'my-service',
   traceExporter: new OTLPTraceExporter({
-    url: 'https://api.honeycomb.io:443/v1/traces', // or wheverever you want these to go. We recommend Honeycomb
+    url: 'https://api.honeycomb.io:443/v1/traces', // or wherever you want these to go. We recommend Honeycomb
     headers: '...your headers...',
   }),
-  // Takes all of the normal, or wrap them as an "OpinionatedInstrumentation" for even more options
   instrumentations: [
     new HttpInstrumentation(),
-    new OpinionatedInstrumentation(
-      new KnexInstrumentation({ maxQueryLength: 10000 }),
-      {
-        collapse: true,
-      },
-    ),
+    new KnexInstrumentation({ maxQueryLength: 10000 }),
   ],
+  // Per-instrumentation hooks, keyed by instrumentation scope name
+  instrumentationHooks: {
+    '@opentelemetry/instrumentation-knex': {
+      collapse: true,
+    },
+  },
 })
 ```
 
@@ -85,9 +82,11 @@ opinionatedTelemetryInit({
   onSpanAfterShutdown?: (span) => void,              // default: debug log
   shutdownSignal?: string,                           // default: 'SIGTERM'
   aggregateSpan?: (span) => boolean | AggregateConfig, // default: undefined
-  instrumentations: Array<Instrumentation | OpinionatedInstrumentation>,
+  instrumentations: Instrumentation[],
+  instrumentationHooks?: Record<string, OpinionatedOptions>,
   additionalSpanProcessors?: SpanProcessor[],
   batchProcessorConfig?: BufferConfig,           // opinionated defaults below
+  logger?: OpinionatedLogger,                    // default: console
 })
 ```
 
@@ -185,22 +184,23 @@ opinionatedTelemetryInit({
 #### Per-instrumentation
 
 ```ts
-new OpinionatedInstrumentation(new DataloaderInstrumentation(), {
-  aggregate: true,
-})
-
-// Or with custom attribute stats:
-new OpinionatedInstrumentation(new RedisInstrumentation(), {
-  aggregate: {
-    keepErrors: false,
-    attributes: {
-      sizes: {
-        attribute: 'redis.response_size_bytes',
-        options: ['min', 'max', 'range'],
+instrumentationHooks: {
+  '@opentelemetry/instrumentation-dataloader': {
+    aggregate: true,
+  },
+  // Or with custom attribute stats:
+  '@opentelemetry/instrumentation-redis': {
+    aggregate: {
+      keepErrors: false,
+      attributes: {
+        sizes: {
+          attribute: 'redis.response_size_bytes',
+          options: ['min', 'max', 'range'],
+        },
       },
     },
   },
-})
+}
 ```
 
 #### Aggregate span attributes
@@ -231,26 +231,46 @@ When you configure `attributes`, each entry maps an output key to a source attri
 | `avg`    | numeric    | Mean value                                            |
 | `median` | numeric    | Median (average of two middle values for even counts) |
 
-### `OpinionatedInstrumentation`
+### `instrumentationHooks`
 
-Wraps an OTel instrumentation with opinionated behavior.
+Per-instrumentation hooks keyed by instrumentation scope name. Allows you to customize span behavior for specific instrumentations without wrapping them.
 
 ```ts
-new OpinionatedInstrumentation(instrumentationInstance, opinionatedOptions?)
+opinionatedTelemetryInit({
+  instrumentations: [
+    new HttpInstrumentation(),
+    new KnexInstrumentation(),
+    new DataloaderInstrumentation(),
+  ],
+  instrumentationHooks: {
+    '@opentelemetry/instrumentation-knex': {
+      collapse: true,
+    },
+    '@opentelemetry/instrumentation-dataloader': {
+      aggregate: true,
+    },
+    '@opentelemetry/instrumentation-http': {
+      renameSpanOnEnd: (span) =>
+        `${span.attributes['http.method']} ${span.attributes['http.route']}`,
+    },
+  },
+})
 ```
 
-Options:
+Options per hook:
 
-- `collapse` -- drop this span, merge attrs into children, reparent children to grandparent
-- `aggregate`: `true` or an `AggregateConfig` to collapse parallel sibling spans into a single aggregate
-- `renameSpan(span)`: rename in onStart
-- `renameSpanOnEnd(span)`: rename in onEnd
-- `onStart(span)`: custom onStart hook
-- `onEnd(span)`: custom onEnd hook
+- `collapse` — drop this span, merge attrs into children, reparent children to grandparent
+- `aggregate` — `true` or an `AggregateConfig` to collapse parallel sibling spans into a single aggregate
+- `renameSpan(name, span)` — rename in onStart, return new name or undefined to keep original
+- `renameSpanOnEnd(span)` — rename in onEnd, return new name or undefined to keep original
+- `onStart(span)` — custom onStart hook
+- `onEnd(span)` — custom onEnd hook
+
+A warning is logged (via `console.warn` by default) if any hook key doesn't match a registered instrumentation name. Pass a custom `logger` to redirect or suppress these warnings.
 
 ### `FilteringSpanProcessor`
 
-Span processor that handles sync span dropping, baggage propagation, span collapsing, and custom hooks. Used internally by `opinionatedTelemetryInit` but can be used standalone.
+Span processor that handles sync span dropping, baggage propagation, span collapsing, instrumentation hooks, and custom lifecycle hooks. Used internally by `opinionatedTelemetryInit` but can be used standalone. Accepts `instrumentationHooks` in its config.
 
 ### Baggage utilities
 

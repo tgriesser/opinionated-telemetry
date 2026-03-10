@@ -7,7 +7,6 @@ import { context, propagation, trace } from '@opentelemetry/api'
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks'
 import { FilteringSpanProcessor } from '../src/filtering-span-processor.js'
 import type { FilteringSpanProcessorConfig } from '../src/filtering-span-processor.js'
-import { OpinionatedInstrumentation } from '../src/opinionated-instrumentation.js'
 
 /**
  * Set up a global context manager so startActiveSpan / getActiveSpan work.
@@ -71,5 +70,4 @@ export function cleanupOtel() {
   trace.disable()
   context.disable()
   propagation.disable()
-  OpinionatedInstrumentation.clearRegistry()
 }

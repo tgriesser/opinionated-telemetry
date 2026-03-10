@@ -8,7 +8,6 @@ import type {
 } from '@opentelemetry/sdk-trace-base'
 import type { MetricReader } from '@opentelemetry/sdk-metrics'
 import type { Instrumentation } from '@opentelemetry/instrumentation'
-import type { OpinionatedInstrumentation } from './opinionated-instrumentation.js'
 import type { FilteringSpanProcessorConfig } from './filtering-span-processor.js'
 
 export interface TraceSummary {
@@ -70,6 +69,10 @@ export interface SamplingConfig {
   burstProtection?: BurstProtectionConfig
 }
 
+export interface OpinionatedLogger {
+  warn: (message: string, ...args: any[]) => void
+}
+
 export interface OpinionatedTelemetryConfig extends FilteringSpanProcessorConfig {
   serviceName: string
   resourceAttributes?: Record<string, string>
@@ -78,10 +81,12 @@ export interface OpinionatedTelemetryConfig extends FilteringSpanProcessorConfig
   spanLimits?: SpanLimits
   /** Signal to register shutdown handler on. Default: 'SIGTERM' */
   shutdownSignal?: string
-  instrumentations: Array<Instrumentation | OpinionatedInstrumentation>
+  instrumentations: Instrumentation[]
   additionalSpanProcessors?: SpanProcessor[]
   /** BatchSpanProcessor config overrides. Opinionated defaults: scheduledDelayMillis=2000, exportTimeoutMillis=10000 */
   batchProcessorConfig?: BufferConfig
+  /** Logger for warnings. Default: console */
+  logger?: OpinionatedLogger
 }
 
 export type AggregateGenericOption = 'uniq'

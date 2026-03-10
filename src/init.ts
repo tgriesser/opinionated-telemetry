@@ -5,7 +5,6 @@ import { ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions'
 import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base'
 import { trace } from '@opentelemetry/api'
 import { FilteringSpanProcessor } from './filtering-span-processor.js'
-import { OpinionatedInstrumentation } from './opinionated-instrumentation.js'
 import type { OpinionatedTelemetryConfig } from './types.js'
 
 /** Opinionated BatchSpanProcessor defaults: flush more frequently, shorter timeout */
@@ -37,23 +36,25 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     instrumentations,
     additionalSpanProcessors = [],
     batchProcessorConfig,
+    logger = console,
     ...processorConfig
   } = config
 
   debug('initializing service=%s', serviceName)
 
-  const unwrappedInstrumentations = instrumentations.map((inst) => {
-    if (inst instanceof OpinionatedInstrumentation) {
-      debug(
-        'registered opinionated instrumentation: %s (collapse=%s)',
-        inst.instrumentation.instrumentationName,
-        !!inst.options.collapse,
-      )
-      return inst.instrumentation
+  // Warn about instrumentationHooks that don't match any instrumentation
+  if (processorConfig.instrumentationHooks) {
+    const instrumentationNames = new Set(
+      instrumentations.map((inst) => inst.instrumentationName),
+    )
+    for (const hookName of Object.keys(processorConfig.instrumentationHooks)) {
+      if (!instrumentationNames.has(hookName)) {
+        logger.warn(
+          `[opin_tel] instrumentationHooks key "${hookName}" does not match any registered instrumentation`,
+        )
+      }
     }
-    debug('registered otel instrumentation: %s', inst.instrumentationName)
-    return inst
-  })
+  }
 
   const batchProcessor = new BatchSpanProcessor(traceExporter, {
     ...DEFAULT_BATCH_CONFIG,
@@ -73,7 +74,7 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     spanLimits,
     spanProcessors,
     ...(metricReader ? { metricReader } : {}),
-    instrumentations: unwrappedInstrumentations,
+    instrumentations,
   })
 
   sdk.start()

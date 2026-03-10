@@ -14,8 +14,11 @@ import { randomBytes } from 'node:crypto'
 import { performance } from 'node:perf_hooks'
 import { crc32 } from 'node:zlib'
 import debugLib from 'debug'
-import { OpinionatedInstrumentation } from './opinionated-instrumentation.js'
-import type { AggregateConfig, SamplingConfig } from './types.js'
+import type {
+  AggregateConfig,
+  OpinionatedOptions,
+  SamplingConfig,
+} from './types.js'
 // Private import — used for instanceof checks and constructing snapshot spans.
 // Pinned to @opentelemetry/sdk-trace-base v2.x. If the SDK restructures its
 // build output, this import will fail at startup (not silently).
@@ -115,6 +118,8 @@ export interface FilteringSpanProcessorConfig {
   sampling?: SamplingConfig
   /** Predicate to determine if a span should be aggregated. Return true for default config, or an AggregateConfig object. */
   aggregateSpan?: (span: Span & ReadableSpan) => boolean | AggregateConfig
+  /** Per-instrumentation hooks keyed by instrumentation scope name */
+  instrumentationHooks?: Record<string, OpinionatedOptions>
 }
 
 interface TailBufferEntry {
@@ -167,6 +172,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
   private _samplingEvictionInterval: ReturnType<typeof setInterval> | null =
     null
   private _aggregateGroups = new Map<string, AggregateGroup>()
+  private _instrumentationHooks: Record<string, OpinionatedOptions>
 
   constructor(wrapped: SpanProcessor, config?: FilteringSpanProcessorConfig) {
     this._wrapped = wrapped
@@ -181,6 +187,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       stuckSpanDetection: config?.stuckSpanDetection ?? true,
       aggregateSpan: config?.aggregateSpan,
     }
+    this._instrumentationHooks = config?.instrumentationHooks ?? {}
     const captureMemory = Boolean(
       this._config.memory || this._config.memoryDelta,
     )
@@ -311,10 +318,10 @@ export class FilteringSpanProcessor implements SpanProcessor {
       })
     }
 
-    // Check opinionated options for this instrumentation scope
+    // Check instrumentation hooks for this scope
     const scope = (span as any).instrumentationScope?.name
     if (scope) {
-      const opts = OpinionatedInstrumentation.getOptions(scope)
+      const opts = this._instrumentationHooks[scope]
       if (opts) {
         if (opts.collapse) {
           this._collapseSpans.set(span.spanContext().spanId, span)
@@ -517,7 +524,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     }
     const scope = (span as any).instrumentationScope?.name
     if (scope) {
-      const opts = OpinionatedInstrumentation.getOptions(scope)
+      const opts = this._instrumentationHooks[scope]
       if (opts?.aggregate === true) return {}
       if (opts?.aggregate && typeof opts.aggregate === 'object')
         return opts.aggregate
@@ -778,7 +785,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     // Instrumentation hooks
     const scope = (span as any).instrumentationScope?.name
     if (scope) {
-      const opts = OpinionatedInstrumentation.getOptions(scope)
+      const opts = this._instrumentationHooks[scope]
       if (opts) {
         if (opts.renameSpanOnEnd) {
           const newName = opts.renameSpanOnEnd(span)

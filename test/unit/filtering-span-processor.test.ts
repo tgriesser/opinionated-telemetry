@@ -1,7 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { context, propagation, trace, SpanStatusCode } from '@opentelemetry/api'
 import { createTestProvider, nextTick, cleanupOtel } from '../helpers.js'
-import { OpinionatedInstrumentation } from '../../src/opinionated-instrumentation.js'
 
 describe('FilteringSpanProcessor', () => {
   afterEach(() => cleanupOtel())
@@ -113,25 +112,11 @@ describe('FilteringSpanProcessor', () => {
 
   describe('collapseing', () => {
     it('collapses child spans when instrumentation has collapse: true', async () => {
-      // Register a mock instrumentation with collapse
-      // Use 'collapse-scope' as the instrumentation name
-      const mockInst = {
-        instrumentationName: 'collapse-scope',
-        instrumentationVersion: '1.0.0',
-        setTracerProvider() {},
-        setMeterProvider() {},
-        getConfig() {
-          return {}
-        },
-        setConfig() {},
-        enable() {},
-        disable() {},
-      } as any
-
-      new OpinionatedInstrumentation(mockInst, { collapse: true })
-
       const { provider, getSpans, shutdown } = createTestProvider({
         dropSyncSpans: false,
+        instrumentationHooks: {
+          'collapse-scope': { collapse: true },
+        },
       })
 
       // Use a tracer named 'collapse-scope' so spans get that instrumentationScope
@@ -172,25 +157,13 @@ describe('FilteringSpanProcessor', () => {
 
   describe('rename hooks', () => {
     it('calls renameSpan on start', async () => {
-      const mockInst = {
-        instrumentationName: '@test/rename-start',
-        instrumentationVersion: '1.0.0',
-        setTracerProvider() {},
-        setMeterProvider() {},
-        getConfig() {
-          return {}
-        },
-        setConfig() {},
-        enable() {},
-        disable() {},
-      } as any
-
-      new OpinionatedInstrumentation(mockInst, {
-        renameSpan: (name) => `prefixed:${name}`,
-      })
-
       const { provider, getSpans, shutdown } = createTestProvider({
         dropSyncSpans: false,
+        instrumentationHooks: {
+          '@test/rename-start': {
+            renameSpan: (name) => `prefixed:${name}`,
+          },
+        },
       })
 
       const scopedTracer = provider.getTracer('@test/rename-start')
@@ -204,25 +177,13 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('calls renameSpanOnEnd', async () => {
-      const mockInst = {
-        instrumentationName: '@test/rename-end',
-        instrumentationVersion: '1.0.0',
-        setTracerProvider() {},
-        setMeterProvider() {},
-        getConfig() {
-          return {}
-        },
-        setConfig() {},
-        enable() {},
-        disable() {},
-      } as any
-
-      new OpinionatedInstrumentation(mockInst, {
-        renameSpanOnEnd: (span) => `ended:${span.name}`,
-      })
-
       const { provider, getSpans, shutdown } = createTestProvider({
         dropSyncSpans: false,
+        instrumentationHooks: {
+          '@test/rename-end': {
+            renameSpanOnEnd: (span) => `ended:${span.name}`,
+          },
+        },
       })
 
       const scopedTracer = provider.getTracer('@test/rename-end')
@@ -241,23 +202,11 @@ describe('FilteringSpanProcessor', () => {
       const onStart = vi.fn()
       const onEnd = vi.fn()
 
-      const mockInst = {
-        instrumentationName: '@test/hooks',
-        instrumentationVersion: '1.0.0',
-        setTracerProvider() {},
-        setMeterProvider() {},
-        getConfig() {
-          return {}
-        },
-        setConfig() {},
-        enable() {},
-        disable() {},
-      } as any
-
-      new OpinionatedInstrumentation(mockInst, { onStart, onEnd })
-
       const { provider, shutdown } = createTestProvider({
         dropSyncSpans: false,
+        instrumentationHooks: {
+          '@test/hooks': { onStart, onEnd },
+        },
       })
 
       const scopedTracer = provider.getTracer('@test/hooks')
@@ -273,37 +222,12 @@ describe('FilteringSpanProcessor', () => {
 
   describe('collapseing chain', () => {
     it('walks up a multi-level collapse chain', async () => {
-      // Register two collapse instrumentations
-      const mockInstA = {
-        instrumentationName: 'collapse-a',
-        instrumentationVersion: '1.0.0',
-        setTracerProvider() {},
-        setMeterProvider() {},
-        getConfig() {
-          return {}
-        },
-        setConfig() {},
-        enable() {},
-        disable() {},
-      } as any
-      const mockInstB = {
-        instrumentationName: 'collapse-b',
-        instrumentationVersion: '1.0.0',
-        setTracerProvider() {},
-        setMeterProvider() {},
-        getConfig() {
-          return {}
-        },
-        setConfig() {},
-        enable() {},
-        disable() {},
-      } as any
-
-      new OpinionatedInstrumentation(mockInstA, { collapse: true })
-      new OpinionatedInstrumentation(mockInstB, { collapse: true })
-
       const { provider, getSpans, shutdown } = createTestProvider({
         dropSyncSpans: false,
+        instrumentationHooks: {
+          'collapse-a': { collapse: true },
+          'collapse-b': { collapse: true },
+        },
       })
 
       const tracerA = provider.getTracer('collapse-a')
@@ -666,29 +590,18 @@ describe('FilteringSpanProcessor', () => {
       vi.useFakeTimers()
 
       const onEnd = vi.fn()
-      const mockInst = {
-        instrumentationName: '@test/stuck-hooks',
-        instrumentationVersion: '1.0.0',
-        setTracerProvider() {},
-        setMeterProvider() {},
-        getConfig() {
-          return {}
-        },
-        setConfig() {},
-        enable() {},
-        disable() {},
-      } as any
-
-      new OpinionatedInstrumentation(mockInst, {
-        onEnd,
-        renameSpanOnEnd: (span) => `enriched:${span.name}`,
-      })
 
       const { provider, getSpans, processor } = createTestProvider({
         dropSyncSpans: false,
         stuckSpanDetection: {
           thresholdMs: 100,
           intervalMs: 50,
+        },
+        instrumentationHooks: {
+          '@test/stuck-hooks': {
+            onEnd,
+            renameSpanOnEnd: (span) => `enriched:${span.name}`,
+          },
         },
       })
 
@@ -1805,24 +1718,11 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('works with per-instrumentation aggregate: true option', async () => {
-      const mockInstrumentation = {
-        instrumentationName: 'test-dataloader',
-        instrumentationVersion: '1.0.0',
-        enable: () => {},
-        disable: () => {},
-        setTracerProvider: () => {},
-        setMeterProvider: () => {},
-        getModuleDefinitions: () => [],
-        setConfig: () => {},
-        getConfig: () => ({}),
-      }
-
-      new OpinionatedInstrumentation(mockInstrumentation as any, {
-        aggregate: true,
-      })
-
       const { provider, getSpans, shutdown } = createTestProvider({
         dropSyncSpans: false,
+        instrumentationHooks: {
+          'test-dataloader': { aggregate: true },
+        },
       })
 
       const tracer = provider.getTracer('test-dataloader')
@@ -2150,31 +2050,20 @@ describe('FilteringSpanProcessor', () => {
     })
 
     it('per-scope aggregate config with attributes', async () => {
-      const mockInstrumentation = {
-        instrumentationName: 'test-redis',
-        instrumentationVersion: '1.0.0',
-        enable: () => {},
-        disable: () => {},
-        setTracerProvider: () => {},
-        setMeterProvider: () => {},
-        getModuleDefinitions: () => [],
-        setConfig: () => {},
-        getConfig: () => ({}),
-      }
-
-      new OpinionatedInstrumentation(mockInstrumentation as any, {
-        aggregate: {
-          attributes: {
-            sizes: {
-              attribute: 'redis.response_size_bytes',
-              options: ['min', 'max'],
+      const { provider, getSpans, shutdown } = createTestProvider({
+        dropSyncSpans: false,
+        instrumentationHooks: {
+          'test-redis': {
+            aggregate: {
+              attributes: {
+                sizes: {
+                  attribute: 'redis.response_size_bytes',
+                  options: ['min', 'max'],
+                },
+              },
             },
           },
         },
-      })
-
-      const { provider, getSpans, shutdown } = createTestProvider({
-        dropSyncSpans: false,
       })
 
       const tracer = provider.getTracer('test-redis')
