@@ -38,5 +38,6 @@ export type {
   BaggagePropagationConfig,
   TraceSummary,
   GlobalHooks,
+  OnStartResult,
   ShouldDropFn,
 } from './types.js'

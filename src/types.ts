@@ -145,9 +145,16 @@ export type ShouldDropFn = (
   durationMs: number,
 ) => boolean | 'drop' | 'collapse'
 
+export interface OnStartResult {
+  /** Mark this span for collapse: drop it, inherit attributes into children, reparent children to grandparent */
+  collapse?: boolean
+  /** Register a conditional drop callback evaluated when the span ends. Ignored if collapse is true. */
+  shouldDrop?: ShouldDropFn
+}
+
 export interface GlobalHooks {
-  /** Called on every span start. Return { shouldDrop } to register conditional dropping. */
-  onStart?: (span: Span & ReadableSpan) => { shouldDrop: ShouldDropFn } | void
+  /** Called on every span start. Return { collapse } and/or { shouldDrop } to control span behavior. */
+  onStart?: (span: Span & ReadableSpan) => OnStartResult | void
   /** Called on every span end, after enrichment. */
   onEnd?: (span: Span & ReadableSpan, durationMs: number) => void
 }
@@ -157,8 +164,8 @@ export interface OpinionatedOptions {
   collapse?: boolean
   /** Collapse parallel sibling spans with the same name into a single aggregate span */
   aggregate?: boolean | AggregateConfig
-  /** Custom onStart hook. Return { shouldDrop } to register conditional dropping. */
-  onStart?: (span: Span & ReadableSpan) => { shouldDrop: ShouldDropFn } | void
+  /** Custom onStart hook. Return { collapse } and/or { shouldDrop } to control span behavior. */
+  onStart?: (span: Span & ReadableSpan) => OnStartResult | void
   /** Custom onEnd hook */
   onEnd?: (span: Span & ReadableSpan, durationMs: number) => void
 }

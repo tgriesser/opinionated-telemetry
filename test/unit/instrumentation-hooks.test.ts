@@ -1,7 +1,11 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { trace } from '@opentelemetry/api'
+import { trace, context } from '@opentelemetry/api'
 import { FilteringSpanProcessor } from '../../src/filtering-span-processor.js'
-import { createSimpleProvider, cleanupOtel } from '../helpers.js'
+import {
+  createSimpleProvider,
+  createTestProvider,
+  cleanupOtel,
+} from '../helpers.js'
 
 describe('instrumentationHooks', () => {
   afterEach(() => cleanupOtel())
@@ -120,6 +124,118 @@ describe('instrumentationHooks', () => {
 
     expect(onStartHook).not.toHaveBeenCalled()
     processor.shutdown()
+  })
+
+  it('collapses per-span via onStart returning { collapse: true }', async () => {
+    const { provider, exporter, shutdown } = createTestProvider({
+      dropSyncSpans: false,
+      instrumentationHooks: {
+        'test-collapse-onstart': {
+          onStart: (span) => {
+            if (span.name === 'should-collapse') {
+              return { collapse: true }
+            }
+          },
+        },
+      },
+    })
+
+    const tracer = provider.getTracer('test-collapse-onstart')
+    const normalTracer = provider.getTracer('test')
+
+    const root = normalTracer.startSpan('root')
+    context.with(trace.setSpan(context.active(), root), () => {
+      const collapse = tracer.startSpan('should-collapse')
+      collapse.setAttribute('parent.attr', 'inherited')
+
+      context.with(trace.setSpan(context.active(), collapse), () => {
+        const child = normalTracer.startSpan('child')
+        child.setAttribute('child.attr', 'kept')
+        child.end()
+      })
+      collapse.end()
+
+      // This span from the same scope should NOT be collapsed
+      const keep = tracer.startSpan('should-keep')
+      keep.end()
+    })
+    root.end()
+    await shutdown()
+
+    exporter.assertSpanNotExists('should-collapse')
+    const child = exporter.assertSpanExists('child')
+    expect(child.attributes['parent.attr']).toBe('inherited')
+    expect(child.attributes['child.attr']).toBe('kept')
+    exporter.assertSpanExists('should-keep')
+  })
+
+  it('collapse from onStart takes precedence over shouldDrop', async () => {
+    const shouldDropFn = vi.fn()
+    const { provider, exporter, shutdown } = createTestProvider({
+      dropSyncSpans: false,
+      instrumentationHooks: {
+        'test-precedence': {
+          onStart: () => ({
+            collapse: true,
+            shouldDrop: shouldDropFn,
+          }),
+        },
+      },
+    })
+
+    const tracer = provider.getTracer('test-precedence')
+    const normalTracer = provider.getTracer('test')
+
+    const root = normalTracer.startSpan('root')
+    context.with(trace.setSpan(context.active(), root), () => {
+      const span = tracer.startSpan('collapsed')
+      span.setAttribute('attr', 'val')
+      context.with(trace.setSpan(context.active(), span), () => {
+        const child = normalTracer.startSpan('child')
+        child.end()
+      })
+      span.end()
+    })
+    root.end()
+    await shutdown()
+
+    // shouldDrop should never have been registered/called
+    expect(shouldDropFn).not.toHaveBeenCalled()
+    exporter.assertSpanNotExists('collapsed')
+    const child = exporter.assertSpanExists('child')
+    expect(child.attributes['attr']).toBe('val')
+  })
+
+  it('globalHooks.onStart can return { collapse: true }', async () => {
+    const { provider, exporter, shutdown } = createTestProvider({
+      dropSyncSpans: false,
+      globalHooks: {
+        onStart: (span) => {
+          if (span.name === 'global-collapse') {
+            return { collapse: true }
+          }
+        },
+      },
+    })
+
+    const tracer = provider.getTracer('test')
+
+    const root = tracer.startSpan('root')
+    context.with(trace.setSpan(context.active(), root), () => {
+      const collapse = tracer.startSpan('global-collapse')
+      collapse.setAttribute('from.parent', 'yes')
+      context.with(trace.setSpan(context.active(), collapse), () => {
+        const child = tracer.startSpan('child')
+        child.end()
+      })
+      collapse.end()
+    })
+    root.end()
+    await shutdown()
+
+    exporter.assertSpanNotExists('global-collapse')
+    const child = exporter.assertSpanExists('child')
+    expect(child.attributes['from.parent']).toBe('yes')
   })
 
   it('defaults to empty hooks when not provided', () => {

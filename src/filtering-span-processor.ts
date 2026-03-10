@@ -18,6 +18,7 @@ import type {
   AggregateConfig,
   AggregateNumericOption,
   GlobalHooks,
+  OnStartResult,
   OpinionatedLogger,
   OpinionatedOptions,
   SamplingConfig,
@@ -379,11 +380,8 @@ export class FilteringSpanProcessor implements SpanProcessor {
         }
         if (opts.onStart) {
           const result = opts.onStart(span)
-          if (result?.shouldDrop) {
-            this._conditionalDropFns.set(
-              span.spanContext().spanId,
-              result.shouldDrop,
-            )
+          if (result) {
+            this._applyOnStartResult(span, result)
           }
         }
       }
@@ -392,11 +390,8 @@ export class FilteringSpanProcessor implements SpanProcessor {
     // Global hooks
     if (this._globalHooks?.onStart) {
       const result = this._globalHooks.onStart(span)
-      if (result?.shouldDrop) {
-        this._conditionalDropFns.set(
-          span.spanContext().spanId,
-          result.shouldDrop,
-        )
+      if (result) {
+        this._applyOnStartResult(span, result)
       }
     }
 
@@ -598,6 +593,18 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
   forceFlush(): Promise<void> {
     return this._wrapped.forceFlush()
+  }
+
+  private _applyOnStartResult(
+    span: Span & ReadableSpan,
+    result: OnStartResult,
+  ): void {
+    const spanId = span.spanContext().spanId
+    if (result.collapse) {
+      this._collapseSpans.set(spanId, span)
+    } else if (result.shouldDrop) {
+      this._conditionalDropFns.set(spanId, result.shouldDrop)
+    }
   }
 
   /**
