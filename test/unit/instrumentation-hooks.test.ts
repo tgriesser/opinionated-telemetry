@@ -36,11 +36,10 @@ describe('instrumentationHooks', () => {
     processor.shutdown()
   })
 
-  it('applies renameSpan hook from hooks config', () => {
-    const onEndSpy = vi.fn()
+  it('can rename span via onStart hook', () => {
     const wrapped = {
       onStart: vi.fn(),
-      onEnd: onEndSpy,
+      onEnd: vi.fn(),
       forceFlush: () => Promise.resolve(),
       shutdown: () => Promise.resolve(),
     }
@@ -48,7 +47,7 @@ describe('instrumentationHooks', () => {
       dropSyncSpans: false,
       instrumentationHooks: {
         'test-rename-scope': {
-          renameSpan: (name) => `prefixed:${name}`,
+          onStart: (span) => span.updateName(`prefixed:${span.name}`),
         },
       },
     })
@@ -61,7 +60,6 @@ describe('instrumentationHooks', () => {
       span as any,
       require('@opentelemetry/api').context.active(),
     )
-    // After onStart, the span name should be renamed
     expect((span as any).name).toBe('prefixed:original')
 
     processor.shutdown()

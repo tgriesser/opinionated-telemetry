@@ -235,43 +235,6 @@ describe('opinionatedTelemetryInit', () => {
     shutdown()
   })
 
-  it('instrumentationHooks renameSpanOnEnd fires through the pipeline', async () => {
-    const exporter = createExporter()
-    const onEndSpy = vi.fn()
-
-    const collectingProcessor: SpanProcessor = {
-      onStart: vi.fn(),
-      onEnd: onEndSpy,
-      forceFlush: () => Promise.resolve(),
-      shutdown: () => Promise.resolve(),
-    }
-
-    const { sdk } = opinionatedTelemetryInit({
-      serviceName: 'test-service',
-      traceExporter: exporter,
-      instrumentations: [],
-      additionalSpanProcessors: [collectingProcessor],
-      dropSyncSpans: false,
-      logger: silentLogger,
-      instrumentationHooks: {
-        'test-fake-scope': {
-          renameSpanOnEnd: (span) => `renamed:${span.name}`,
-        },
-      },
-    })
-
-    // Create a span with the same scope name as the hook
-    const tracer = trace.getTracer('test-fake-scope')
-    const span = tracer.startSpan('original-name')
-    span.end()
-
-    await sdk.shutdown()
-
-    expect(onEndSpy).toHaveBeenCalled()
-    const receivedSpan = onEndSpy.mock.calls[0][0] as ReadableSpan
-    expect(receivedSpan.name).toBe('renamed:original-name')
-  })
-
   it('instrumentationHooks onEnd fires through the pipeline', async () => {
     const exporter = createExporter()
     const hookSpy = vi.fn()

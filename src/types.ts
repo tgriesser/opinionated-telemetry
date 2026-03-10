@@ -120,13 +120,6 @@ export interface OpinionatedOptions {
   collapse?: boolean
   /** Collapse parallel sibling spans with the same name into a single aggregate span */
   aggregate?: boolean | AggregateConfig
-  /** Rename span in onStart */
-  renameSpan?: (
-    spanName: string,
-    span: Span & ReadableSpan,
-  ) => string | undefined
-  /** Rename span in onEnd */
-  renameSpanOnEnd?: (span: Span & ReadableSpan) => string | undefined
   /** Custom onStart hook */
   onStart?: (span: Span & ReadableSpan) => void
   /** Custom onEnd hook */

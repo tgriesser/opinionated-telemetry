@@ -326,12 +326,6 @@ export class FilteringSpanProcessor implements SpanProcessor {
         if (opts.collapse) {
           this._collapseSpans.set(span.spanContext().spanId, span)
         }
-        if (opts.renameSpan) {
-          const newName = opts.renameSpan(span.name, span)
-          if (newName) {
-            span.updateName(newName)
-          }
-        }
         if (opts.onStart) {
           opts.onStart(span)
         }
@@ -786,16 +780,8 @@ export class FilteringSpanProcessor implements SpanProcessor {
     const scope = (span as any).instrumentationScope?.name
     if (scope) {
       const opts = this._instrumentationHooks[scope]
-      if (opts) {
-        if (opts.renameSpanOnEnd) {
-          const newName = opts.renameSpanOnEnd(span)
-          if (newName) {
-            span.updateName(newName)
-          }
-        }
-        if (opts.onEnd) {
-          opts.onEnd(span)
-        }
+      if (opts?.onEnd) {
+        opts.onEnd(span)
       }
     }
 

@@ -155,13 +155,13 @@ describe('FilteringSpanProcessor', () => {
     })
   })
 
-  describe('rename hooks', () => {
-    it('calls renameSpan on start', async () => {
+  describe('rename via hooks', () => {
+    it('can rename span in onStart via updateName', async () => {
       const { provider, getSpans, shutdown } = createTestProvider({
         dropSyncSpans: false,
         instrumentationHooks: {
           '@test/rename-start': {
-            renameSpan: (name) => `prefixed:${name}`,
+            onStart: (span) => span.updateName(`prefixed:${span.name}`),
           },
         },
       })
@@ -176,12 +176,12 @@ describe('FilteringSpanProcessor', () => {
       expect(found).toBeDefined()
     })
 
-    it('calls renameSpanOnEnd', async () => {
+    it('can rename span in onEnd via updateName', async () => {
       const { provider, getSpans, shutdown } = createTestProvider({
         dropSyncSpans: false,
         instrumentationHooks: {
           '@test/rename-end': {
-            renameSpanOnEnd: (span) => `ended:${span.name}`,
+            onEnd: (span) => span.updateName(`ended:${span.name}`),
           },
         },
       })
@@ -599,8 +599,10 @@ describe('FilteringSpanProcessor', () => {
         },
         instrumentationHooks: {
           '@test/stuck-hooks': {
-            onEnd,
-            renameSpanOnEnd: (span) => `enriched:${span.name}`,
+            onEnd: (span) => {
+              onEnd(span)
+              span.updateName(`enriched:${span.name}`)
+            },
           },
         },
       })
