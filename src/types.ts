@@ -6,9 +6,9 @@ import type {
   ReadableSpan,
   BufferConfig,
 } from '@opentelemetry/sdk-trace-base'
-import type { MetricReader } from '@opentelemetry/sdk-metrics'
 import type { Instrumentation } from '@opentelemetry/instrumentation'
 import type { FilteringSpanProcessorConfig } from './filtering-span-processor.js'
+import type { NodeSDKConfiguration } from '@opentelemetry/sdk-node'
 
 export interface TraceSummary {
   spans: ReadableSpan[]
@@ -89,19 +89,41 @@ export interface BaggagePropagationConfig {
   allowedKeys?: string[]
 }
 
-export interface OpinionatedTelemetryConfig extends FilteringSpanProcessorConfig {
+type NodeSDKConfig = Partial<
+  Pick<
+    NodeSDKConfiguration,
+    | 'idGenerator'
+    | 'resourceDetectors'
+    | 'autoDetectResources'
+    | 'metricReaders'
+  >
+>
+
+export interface OpinionatedTelemetryConfig
+  extends FilteringSpanProcessorConfig, NodeSDKConfig {
   serviceName: string
   resourceAttributes?: Record<string, string>
-  traceExporter: SpanExporter
-  metricReader?: MetricReader
-  /** Enable @opentelemetry/host-metrics (CPU, memory, network). Only active when metricReader is set. Default: true */
-  hostMetrics?: boolean
   spanLimits?: SpanLimits
-  /** Signal to register shutdown handler on. Default: 'SIGTERM' */
-  shutdownSignal?: string
+  /**
+   * Signal to register shutdown handler on. Default: 'SIGTERM'
+   */
+  shutdownSignal?: string | null
+  /**
+   * Instrumentations to pass to the
+   */
   instrumentations: Instrumentation[]
+  /**
+   * Trace Exporter for the spans passed to the FilteringSpanProcessor
+   */
+  traceExporter: SpanExporter
+  /**
+   * Any additional span processors other than the FilteringSpanProcessor
+   * which the raw spans will be passed to
+   */
   additionalSpanProcessors?: SpanProcessor[]
-  /** BatchSpanProcessor config overrides. Set to false to disable batching (uses SimpleSpanProcessor). Opinionated defaults: scheduledDelayMillis=2000, exportTimeoutMillis=10000 */
+  /**
+   * BatchSpanProcessor config overrides. Set to false to disable batching (uses SimpleSpanProcessor). Opinionated defaults: scheduledDelayMillis=2000, exportTimeoutMillis=10000
+   */
   batchProcessorConfig?: BufferConfig | false
   /**
    * Control which baggage entries are propagated on outgoing HTTP requests.

@@ -71,8 +71,10 @@ opinionatedTelemetryInit({
   serviceName: string,
   resourceAttributes?: Record<string, string>,
   traceExporter?: SpanExporter,
-  metricReader?: MetricReader,
-  hostMetrics?: boolean,                              // default: true (requires metricReader)
+  metricReaders?: MetricReader[],
+  resourceDetectors?: ResourceDetector[],
+  autoDetectResources?: boolean,
+  idGenerator?: IdGenerator,
   spanLimits?: SpanLimits,
   dropSyncSpans?: true | ((span) => boolean),        // default: true
   baggageToAttributes?: boolean,                     // default: true
@@ -81,7 +83,7 @@ opinionatedTelemetryInit({
   eventLoopUtilization?: boolean | 'root',           // default: true (all spans)
   stuckSpanDetection?: boolean | StuckSpanConfig,    // default: true
   onSpanAfterShutdown?: (span) => void,              // default: logger.warn
-  shutdownSignal?: string,                           // default: 'SIGTERM'
+  shutdownSignal?: string | null,                    // default: 'SIGTERM'
   aggregateSpan?: (span) => boolean | AggregateConfig, // default: undefined
   onDroppedSpan?: (span, reason, durationMs?) => void, // called on dropped/sampled spans
   instrumentations: Instrumentation[],
@@ -95,10 +97,6 @@ opinionatedTelemetryInit({
 ```
 
 Returns `{ sdk, getTracer, shutdown }`.
-
-#### `hostMetrics`
-
-Enables `@opentelemetry/host-metrics` to collect system and process metrics (CPU, memory, network). Default: `true`, but only active when `metricReader` is provided. Set to `false` to disable.
 
 #### `memory`
 
@@ -476,15 +474,16 @@ This sets up:
 
 - **Trace export** to `https://api.honeycomb.io/v1/traces` with dataset = `serviceName`
 - **Metric export** via `FlatMetricExporter` to `https://api.honeycomb.io/v1/metrics` with dataset = `${serviceName}_metrics`, collected every 60s
-- **Host metrics** enabled by default (CPU, memory, network)
 
-All other `opinionatedTelemetryInit` options are supported (except `traceExporter`, which is configured automatically).
+All other `opinionatedTelemetryInit` options are supported. `traceExporter` and `metricExporter` can be overridden if you need custom exporter configuration.
 
-| Option                   | Type      | Default  | Description                                 |
-| ------------------------ | --------- | -------- | ------------------------------------------- |
-| `apiKey`                 | `string`  | required | Honeycomb API key                           |
-| `enableMetricCollection` | `boolean` | `true`   | Set to `false` to disable metric collection |
-| `metricExportInterval`   | `number`  | `60_000` | Metric export interval in milliseconds      |
+| Option                   | Type                 | Default  | Description                                 |
+| ------------------------ | -------------------- | -------- | ------------------------------------------- |
+| `apiKey`                 | `string`             | required | Honeycomb API key                           |
+| `enableMetricCollection` | `boolean`            | `true`   | Set to `false` to disable metric collection |
+| `metricExportInterval`   | `number`             | `60_000` | Metric export interval in milliseconds      |
+| `traceExporter`          | `SpanExporter`       | —        | Override the default OTLP trace exporter    |
+| `metricExporter`         | `PushMetricExporter` | —        | Override the default OTLP metric exporter   |
 
 The entrypoint also re-exports everything from the main `opinionated-telemetry` package, so you can use it as your sole import.
 

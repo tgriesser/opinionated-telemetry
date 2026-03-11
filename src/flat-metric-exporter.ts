@@ -2,9 +2,7 @@ import type {
   PushMetricExporter,
   ResourceMetrics,
   MetricData,
-  ScopeMetrics,
   GaugeMetricData,
-  DataPoint,
 } from '@opentelemetry/sdk-metrics'
 import {
   AggregationTemporality,
