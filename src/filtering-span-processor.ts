@@ -316,10 +316,13 @@ export class FilteringSpanProcessor implements SpanProcessor {
   }
 
   onStart(span: Span & ReadableSpan, ctx: Context): void {
+    const spanCtx = span.spanContext()
+    const { traceId, spanId } = spanCtx
+
     // Track all spans, for both dead span detection as well as knowing how many spans are open concurrently
     this._allSpans.add(span)
-    this._activeSpanIds.add(span.spanContext().spanId)
-    this._incrementTraceCount(span.spanContext().traceId, 'started')
+    this._activeSpanIds.add(spanId)
+    this._incrementTraceCount(traceId, 'started')
 
     // Track tick for sync span detection
     if (this._config.dropSyncSpans) {
@@ -341,9 +344,8 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
     // Track root spans
     if (!span.parentSpanContext) {
-      const spanCtx = span.spanContext()
-      if (!this._rootSpans.has(spanCtx.traceId)) {
-        this._rootSpans.set(spanCtx.traceId, span)
+      if (!this._rootSpans.has(traceId)) {
+        this._rootSpans.set(traceId, span)
         if (this._memoryUse) {
           this._captureMemoryOnSpan(span)
         }
@@ -354,13 +356,13 @@ export class FilteringSpanProcessor implements SpanProcessor {
             span.attributes,
             span.name,
           )
-          this._headDecisions.set(spanCtx.traceId, headRate)
+          this._headDecisions.set(traceId, headRate)
         }
 
         // Tail buffer initialization
         if (this._sampling?.tail) {
-          const headRate = this._headDecisions.get(spanCtx.traceId) ?? 1
-          this._tailBuffer.set(spanCtx.traceId, {
+          const headRate = this._headDecisions.get(traceId) ?? 1
+          this._tailBuffer.set(traceId, {
             spans: [],
             rootSpan: null,
             headSampleRate: headRate,
@@ -374,11 +376,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
           this._evictOldestTailEntry()
         }
       } else {
-        debug(
-          'multiple root spans for trace=%s span=%s',
-          spanCtx.traceId,
-          span.name,
-        )
+        debug('multiple root spans for trace=%s span=%s', traceId, span.name)
       }
     }
 
@@ -396,7 +394,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       const opts = this._instrumentationHooks[scope]
       if (opts) {
         if (opts.collapse) {
-          this._collapseSpans.set(span.spanContext().spanId, span)
+          this._collapseSpans.set(spanId, span)
         }
         if (opts.onStart) {
           const result = opts.onStart(span)
@@ -465,9 +463,12 @@ export class FilteringSpanProcessor implements SpanProcessor {
   }
 
   onEnd(span: ReadableSpan): void {
+    const spanCtx = span.spanContext()
+    const { traceId, spanId } = spanCtx
+
     this._allSpans.delete(span as Span)
-    this._activeSpanIds.delete(span.spanContext().spanId)
-    this._reportedStuckSpans.delete(span.spanContext().spanId)
+    this._activeSpanIds.delete(spanId)
+    this._reportedStuckSpans.delete(spanId)
 
     // Drop sync spans
     if (this._config.dropSyncSpans) {
@@ -477,15 +478,14 @@ export class FilteringSpanProcessor implements SpanProcessor {
           : tickMap.get(span as Span) === this._currentTick
       if (shouldDropSync) {
         debug('dropping sync span: %s', span.name)
-        const traceId = span.spanContext().traceId
         let traceDropped = this._droppedSyncSpans.get(traceId)
         if (!traceDropped) {
           traceDropped = new Map()
           this._droppedSyncSpans.set(traceId, traceDropped)
         }
-        traceDropped.set(span.spanContext().spanId, span.parentSpanContext)
+        traceDropped.set(spanId, span.parentSpanContext)
         this._onDroppedSpan?.(span, 'sync')
-        this._incrementTraceCount(span.spanContext().traceId, 'droppedSync')
+        this._incrementTraceCount(traceId, 'droppedSync')
         return
       }
     }
@@ -505,16 +505,15 @@ export class FilteringSpanProcessor implements SpanProcessor {
     // Collapse drop decision (not part of enrichment)
     if (span.parentSpanContext) {
       // Drop spans that were marked for collapse
-      const shouldDropSpan = this._collapseSpans.has(span.spanContext().spanId)
+      const shouldDropSpan = this._collapseSpans.has(spanId)
       if (shouldDropSpan) {
-        this._collapseSpans.delete(span.spanContext().spanId)
+        this._collapseSpans.delete(spanId)
         debug('dropping collapsed span: %s', span.name)
         // Step 4a: If collapsed span also had conditional drop, flush its buffer
-        if (this._conditionalDropFns.has(span.spanContext().spanId)) {
-          this._conditionalDropFns.delete(span.spanContext().spanId)
-          const buffered =
-            this._conditionalDropBuffer.get(span.spanContext().spanId) ?? []
-          this._conditionalDropBuffer.delete(span.spanContext().spanId)
+        if (this._conditionalDropFns.has(spanId)) {
+          this._conditionalDropFns.delete(spanId)
+          const buffered = this._conditionalDropBuffer.get(spanId) ?? []
+          this._conditionalDropBuffer.delete(spanId)
           for (const child of buffered) {
             // Reparent to grandparent (the collapse target)
             // @ts-expect-error — readonly, reparenting buffered child
@@ -525,8 +524,6 @@ export class FilteringSpanProcessor implements SpanProcessor {
         return
       }
     }
-
-    const spanId = span.spanContext().spanId
 
     // Step 4b: Buffer check — if parent has conditional drop, buffer this span
     if (span.parentSpanContext) {
@@ -633,7 +630,8 @@ export class FilteringSpanProcessor implements SpanProcessor {
    * Returns true if the span was dropped (caller should return), false if span should continue.
    */
   private _processConditionalDrop(span: ReadableSpan): boolean {
-    const spanId = span.spanContext().spanId
+    const spanCtx = span.spanContext()
+    const spanId = spanCtx.spanId
     const dropFn = this._conditionalDropFns.get(spanId)
     if (!dropFn) return false
 
@@ -686,7 +684,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     }
 
     this._onDroppedSpan?.(span, 'conditional', durationMs)
-    this._incrementTraceCount(span.spanContext().traceId, 'droppedConditional')
+    this._incrementTraceCount(spanCtx.traceId, 'droppedConditional')
     debug('dropping conditional span: %s', span.name)
     return true
   }
