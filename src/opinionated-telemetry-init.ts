@@ -46,6 +46,7 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     additionalSpanProcessors = [],
     batchProcessorConfig,
     baggagePropagation,
+    views,
     ...processorConfig
   } = config
 
@@ -106,6 +107,7 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     textMapPropagator,
     metricReaders,
     instrumentations,
+    views,
   })
 
   sdk.start()

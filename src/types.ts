@@ -96,6 +96,7 @@ type NodeSDKConfig = Partial<
     | 'resourceDetectors'
     | 'autoDetectResources'
     | 'metricReaders'
+    | 'views'
   >
 >
 

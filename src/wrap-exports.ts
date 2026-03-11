@@ -196,6 +196,121 @@ function matchesMethodFilter(
   return filter(methodName, className, method, filename)
 }
 
+/**
+ * Handles the case where module.exports is directly a function or class
+ * (e.g., `module.exports = function handler() {}` or `module.exports = class Service {}`).
+ */
+function wrapDirectExport(
+  exportedFn: Function,
+  spanPrefix: string,
+  tracer: Tracer,
+  ignoreRules: IgnoreRuleEntry[],
+  hooks?: AutoInstrumentHooks,
+  functionInstrumentation?: FunctionInstrumentationConfig,
+  classInstrumentation?: ClassInstrumentationConfig,
+): any {
+  const fnName = exportedFn.name || 'default'
+
+  if (shouldIgnore(spanPrefix, 'default', ignoreRules)) {
+    debug('ignoring direct export %s', spanPrefix)
+    return exportedFn
+  }
+
+  // Class instrumentation (opt-in)
+  if (isClass(exportedFn) && classInstrumentation) {
+    const className = fnName
+    const classShouldWrap = classInstrumentation.shouldWrap ?? defaultShouldWrap
+
+    if (
+      !matchesClassFilter(
+        className,
+        exportedFn,
+        spanPrefix,
+        classInstrumentation.includeClass,
+      )
+    ) {
+      return exportedFn
+    }
+
+    debug('wrapping direct class export %s:%s', spanPrefix, className)
+    const protoKeys = Object.getOwnPropertyNames(exportedFn.prototype)
+    for (const method of protoKeys) {
+      if (method === 'constructor') continue
+      const methodDesc = Object.getOwnPropertyDescriptor(
+        exportedFn.prototype,
+        method,
+      )
+      if (!methodDesc || !('value' in methodDesc)) continue
+      const methodFn = methodDesc.value
+      if (typeof methodFn !== 'function') continue
+      if (!classShouldWrap(methodFn, method, spanPrefix)) continue
+      if (
+        !matchesMethodFilter(
+          method,
+          className,
+          methodFn,
+          spanPrefix,
+          classInstrumentation.includeMethod,
+        )
+      ) {
+        continue
+      }
+
+      const spanName = `${className}.${method}`
+      debug('wrapping method %s:%s', spanPrefix, spanName)
+      exportedFn.prototype[method] = wrapFunction(
+        methodFn,
+        spanName,
+        {
+          type: 'method',
+          className,
+          methodName: method,
+          filename: spanPrefix,
+        },
+        tracer,
+        hooks,
+      )
+    }
+    return exportedFn
+  }
+
+  // Function instrumentation
+  const fnShouldWrap = functionInstrumentation?.shouldWrap ?? defaultShouldWrap
+  if (!fnShouldWrap(exportedFn, fnName, spanPrefix)) return exportedFn
+  if (
+    !matchesFnFilter(
+      fnName,
+      exportedFn,
+      spanPrefix,
+      functionInstrumentation?.include,
+    )
+  ) {
+    return exportedFn
+  }
+
+  debug('wrapping direct export %s:%s', spanPrefix, fnName)
+  const wrapped = wrapFunction(
+    exportedFn as (...args: any[]) => any,
+    fnName,
+    { type: 'function', fnName, filename: spanPrefix },
+    tracer,
+    hooks,
+  )
+
+  // Copy static properties from the original to the wrapper
+  // (common pattern: module.exports = fn; module.exports.helper = ...)
+  const staticKeys = Object.getOwnPropertyNames(exportedFn)
+  for (const key of staticKeys) {
+    if (key === 'length' || key === 'name' || key === 'prototype') continue
+    const desc = Object.getOwnPropertyDescriptor(exportedFn, key)
+    if (desc) {
+      Object.defineProperty(wrapped, key, desc)
+    }
+  }
+
+  return wrapped
+}
+
 export interface WrapModuleExportsConfig {
   ignoreRules?: IgnoreRuleEntry[]
   hooks?: AutoInstrumentHooks
@@ -219,7 +334,24 @@ export function wrapModuleExports(
   functionInstrumentation?: FunctionInstrumentationConfig,
   classInstrumentation?: ClassInstrumentationConfig,
 ): Record<string, any> {
-  if (!exports || typeof exports !== 'object') {
+  if (!exports) {
+    return exports
+  }
+
+  // Handle module.exports = function or module.exports = class
+  if (typeof exports === 'function') {
+    return wrapDirectExport(
+      exports,
+      spanPrefix,
+      tracer,
+      ignoreRules,
+      hooks,
+      functionInstrumentation,
+      classInstrumentation,
+    )
+  }
+
+  if (typeof exports !== 'object') {
     return exports
   }
 

@@ -7,7 +7,9 @@ import type {
 import {
   AggregationTemporality,
   DataPointType,
+  createAllowListAttributesProcessor,
 } from '@opentelemetry/sdk-metrics'
+import type { ViewOptions } from '@opentelemetry/sdk-metrics'
 import type { Attributes, HrTime } from '@opentelemetry/api'
 import type { ExportResult } from '@opentelemetry/core'
 import {
@@ -324,3 +326,59 @@ export function computePercentile(
 
   return max ?? boundaries[boundaries.length - 1] ?? 0
 }
+
+/**
+ * Opinionated Views for HTTP metrics that reduce cardinality by stripping
+ * attributes redundant with trace data. Covers both old (default) and stable
+ * semconv metric names (OTEL_SEMCONV_STABILITY_OPT_IN=http or http/dup).
+ */
+export const flatMetricExporterViews: ViewOptions[] = [
+  // --- Stable semconv (OTEL_SEMCONV_STABILITY_OPT_IN=http or http/dup) ---
+
+  // Server: keep method + status_code + error.type, drop route/scheme/protocol/address/port
+  {
+    instrumentName: 'http.server.request.duration',
+    attributesProcessors: [
+      createAllowListAttributesProcessor([
+        'http.request.method',
+        'http.response.status_code',
+        'error.type',
+      ]),
+    ],
+  },
+
+  // Client: keep method + target host + status_code + error.type
+  {
+    instrumentName: 'http.client.request.duration',
+    attributesProcessors: [
+      createAllowListAttributesProcessor([
+        'http.request.method',
+        'server.address',
+        'http.response.status_code',
+        'error.type',
+      ]),
+    ],
+  },
+
+  // --- Old semconv (default, or OTEL_SEMCONV_STABILITY_OPT_IN=http/dup) ---
+
+  // Server: keep method + status_code, drop scheme/host/flavor
+  {
+    instrumentName: 'http.server.duration',
+    attributesProcessors: [
+      createAllowListAttributesProcessor(['http.method', 'http.status_code']),
+    ],
+  },
+
+  // Client: keep method + peer + status_code
+  {
+    instrumentName: 'http.client.duration',
+    attributesProcessors: [
+      createAllowListAttributesProcessor([
+        'http.method',
+        'net.peer.name',
+        'http.status_code',
+      ]),
+    ],
+  },
+]

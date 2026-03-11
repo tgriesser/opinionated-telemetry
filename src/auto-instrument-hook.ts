@@ -46,7 +46,8 @@ export function createAutoInstrumentHookCJS(
     let resolvedPath: string
     try {
       resolvedPath = (Module as any)._resolveFilename(request, parent)
-    } catch {
+    } catch (e) {
+      debug('error wrapping %s, %j', request, String(e))
       return result
     }
 

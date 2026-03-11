@@ -5,7 +5,10 @@ import {
   PushMetricExporter,
 } from '@opentelemetry/sdk-metrics'
 import { opinionatedTelemetryInit } from './opinionated-telemetry-init.js'
-import { FlatMetricExporter } from './flat-metric-exporter.js'
+import {
+  FlatMetricExporter,
+  flatMetricExporterViews,
+} from './flat-metric-exporter.js'
 import type { OpinionatedTelemetryConfig } from './types.js'
 import type { SpanExporter } from '@opentelemetry/sdk-trace-base'
 
@@ -60,5 +63,6 @@ export function honeycombInit(config: HoneycombInitOpinionatedTelemetryConfig) {
         },
       }),
     metricReaders: metricReader ? [metricReader] : [],
+    views: metricReader ? flatMetricExporterViews : [],
   })
 }
