@@ -2,3 +2,7 @@ node_modules
 dist
 *.tsbuildinfo
 coverage
+*.env
+ghost-app
+examples/*/package-lock.json
+*yarn.lock

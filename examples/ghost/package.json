@@ -1,0 +1,11 @@
+{
+  "type": "commonjs",
+  "scripts": {
+    "predev": "cd ../.. && yarn build && cd examples/ghost && npm i",
+    "dev": "cd ghost-app && node --experimental-strip-types --require ../telemetry.ts current/index.js"
+  },
+  "dependencies": {
+    "@opentelemetry/auto-instrumentations-node": "^0.71.0",
+    "opinionated-telemetry": "file:../.."
+  }
+}

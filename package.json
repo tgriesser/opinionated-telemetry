@@ -90,21 +90,20 @@
     "build:cjs": "tsc -p tsconfig.cjs.json",
     "build:esm": "tsc -p tsconfig.json",
     "clean": "rm -rf dist",
-    "dev": "concurrently 'npm run build:cjs -- --watch' 'npm run build:esm -- --watch'",
     "format": "prettier --write '**/*.{ts,md,json}'",
     "format:check": "prettier --check '**/*.{ts,md,json}'",
     "lint:deps": "knip",
     "prepare": "git config core.hooksPath .githooks",
     "test": "vitest run",
     "test:typecheck": "tsc -p tsconfig.test.json",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "watch": "concurrently 'npm run build:cjs -- --watch' 'npm run build:esm -- --watch'"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/core": "^2.6.0",
     "@opentelemetry/exporter-metrics-otlp-proto": "^0.213.0",
     "@opentelemetry/exporter-trace-otlp-proto": "^0.213.0",
-    "@opentelemetry/host-metrics": "^0.38.3",
     "@opentelemetry/instrumentation": "^0.213.0",
     "@opentelemetry/resources": "^2.6.0",
     "@opentelemetry/sdk-metrics": "^2.6.0",

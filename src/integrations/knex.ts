@@ -101,7 +101,12 @@ export function otelInitKnex(
   knexInstance: any,
   config?: KnexOtelConfig,
 ): () => void {
+  if (!knexInstance) {
+    debug('passed undefined knexInstance')
+    return () => {}
+  }
   if (knexInstance[hasInstrumentedKey]) {
+    debug('skipping init on instrumented instance')
     return () => {}
   }
   Object.defineProperty(knexInstance, hasInstrumentedKey, { value: true })
