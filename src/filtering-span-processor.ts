@@ -31,15 +31,34 @@ import { SpanImpl } from '@opentelemetry/sdk-trace-base/build/src/Span.js'
 import { OPIN_TEL_INTERNAL, OPIN_TEL_PREFIX } from './constants.js'
 
 const debug = debugLib('opin_tel:filtering-processor')
-const TICK_KEY = '__tick'
-const MEMORY_KEY = '__memStart'
-const ELU_KEY = '__eluStart'
-const AGGREGATE_KEY = '__aggregateKey'
+
+// WeakMaps for per-span metadata — avoids Object.defineProperty which forces
+// hidden class transitions on SpanImpl objects and defeats V8 inline caches.
+const tickMap = new WeakMap<Span, number>()
+const memoryMap = new WeakMap<Span, number | NodeJS.MemoryUsage>()
+const eluMap = new WeakMap<
+  Span,
+  ReturnType<typeof performance.eventLoopUtilization>
+>()
+const aggregateKeyMap = new WeakMap<Span, string>()
 
 type HrTime = [number, number]
 
 function hrTimeToMs(hr: HrTime): number {
   return hr[0] * 1e3 + hr[1] / 1e6
+}
+
+function arrayStats(arr: number[]): { min: number; max: number; sum: number } {
+  let min = arr[0]
+  let max = arr[0]
+  let sum = arr[0]
+  for (let i = 1; i < arr.length; i++) {
+    const v = arr[i]
+    if (v < min) min = v
+    else if (v > max) max = v
+    sum += v
+  }
+  return { min, max, sum }
 }
 
 interface AttributeTracker {
@@ -155,6 +174,8 @@ interface TailBufferEntry {
 }
 
 interface TraceCounts {
+  started: number
+  captured: number
   droppedSync: number
   droppedConditional: number
   droppedAggregated: number
@@ -296,12 +317,11 @@ export class FilteringSpanProcessor implements SpanProcessor {
   onStart(span: Span & ReadableSpan, ctx: Context): void {
     // Track all spans, for both dead span detection as well as knowing how many spans are open concurrently
     this._allSpans.add(span)
+    this._incrementTraceCount(span.spanContext().traceId, 'started')
 
     // Track tick for sync span detection
     if (this._config.dropSyncSpans) {
-      Object.defineProperty(span, TICK_KEY, {
-        value: this._currentTick,
-      })
+      tickMap.set(span, this._currentTick)
       if (!this._nextTickScheduled) {
         this._scheduleNextTick()
       }
@@ -365,9 +385,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       this._eventLoopUtilization === true ||
       (this._eventLoopUtilization === 'root' && !span.parentSpanContext)
     ) {
-      Object.defineProperty(span, ELU_KEY, {
-        value: performance.eventLoopUtilization(),
-      })
+      eluMap.set(span, performance.eventLoopUtilization())
     }
 
     // Check instrumentation hooks for this scope
@@ -437,7 +455,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
             attrTrackers,
           })
         }
-        Object.defineProperty(span, AGGREGATE_KEY, { value: key })
+        aggregateKeyMap.set(span, key)
       }
     }
 
@@ -453,7 +471,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       const shouldDropSync =
         typeof this._config.dropSyncSpans === 'function'
           ? this._config.dropSyncSpans(span as Span & ReadableSpan)
-          : (span as any)[TICK_KEY] === this._currentTick
+          : tickMap.get(span as Span) === this._currentTick
       if (shouldDropSync) {
         debug('dropping sync span: %s', span.name)
         const traceId = span.spanContext().traceId
@@ -541,7 +559,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     // Flush conditional drop buffers (no decision = keep all)
     for (const [spanId, buffered] of this._conditionalDropBuffer) {
       for (const child of buffered) {
-        this._wrapped.onEnd(child)
+        this._exportSpan(child)
       }
     }
     this._droppedSyncSpans.clear()
@@ -679,7 +697,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     if (this._processConditionalDrop(span)) return
 
     // Aggregation — consume non-error spans, let error spans fall through
-    const aggregateKey = (span as any)[AGGREGATE_KEY] as string | undefined
+    const aggregateKey = aggregateKeyMap.get(span as Span)
     if (aggregateKey) {
       const group = this._aggregateGroups.get(aggregateKey)
       if (group) {
@@ -695,7 +713,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
     // Stuck span snapshots bypass sampling entirely
     if (span.attributes[OPIN_TEL_INTERNAL.stuck.isSnapshot]) {
-      this._wrapped.onEnd(span)
+      this._exportSpan(span)
       return
     }
 
@@ -705,13 +723,15 @@ export class FilteringSpanProcessor implements SpanProcessor {
       return
     }
 
-    this._wrapped.onEnd(span)
+    this._exportSpan(span)
   }
 
   private _incrementTraceCount(traceId: string, kind: TraceCountKey): void {
     let counts = this._traceCounts.get(traceId)
     if (!counts) {
       counts = {
+        started: 0,
+        captured: 0,
         droppedSync: 0,
         droppedConditional: 0,
         droppedAggregated: 0,
@@ -722,6 +742,11 @@ export class FilteringSpanProcessor implements SpanProcessor {
       this._traceCounts.set(traceId, counts)
     }
     counts[kind]++
+  }
+
+  private _exportSpan(span: ReadableSpan): void {
+    this._incrementTraceCount(span.spanContext().traceId, 'captured')
+    this._wrapped.onEnd(span)
   }
 
   private _resolveAggregateConfig(
@@ -826,7 +851,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       group.bufferedFirstNonError &&
       group.errorCount === 0
     ) {
-      this._wrapped.onEnd(group.bufferedFirstNonError)
+      this._exportSpan(group.bufferedFirstNonError)
       return
     }
 
@@ -869,7 +894,21 @@ export class FilteringSpanProcessor implements SpanProcessor {
           (v) => typeof v === 'number',
         ) as number[]
 
-        for (const opt of tracker.options) {
+        const opts = tracker.options
+        // Single-pass stats computed once per tracker when any numeric option is needed
+        const needsStats =
+          nums.length > 0 &&
+          opts.some(
+            (o) =>
+              o === 'min' ||
+              o === 'max' ||
+              o === 'range' ||
+              o === 'sum' ||
+              o === 'avg',
+          )
+        const stats = needsStats ? arrayStats(nums) : null
+
+        for (const opt of opts) {
           switch (opt) {
             case 'uniq': {
               const uniq = [...new Set(tracker.values.map(String))]
@@ -880,24 +919,19 @@ export class FilteringSpanProcessor implements SpanProcessor {
               attributes[`${prefix}.count`] = tracker.values.length
               break
             case 'sum':
-              if (nums.length)
-                attributes[`${prefix}.sum`] = nums.reduce((a, b) => a + b, 0)
+              if (stats) attributes[`${prefix}.sum`] = stats.sum
               break
             case 'min':
-              if (nums.length) attributes[`${prefix}.min`] = Math.min(...nums)
+              if (stats) attributes[`${prefix}.min`] = stats.min
               break
             case 'max':
-              if (nums.length) attributes[`${prefix}.max`] = Math.max(...nums)
+              if (stats) attributes[`${prefix}.max`] = stats.max
               break
             case 'range':
-              if (nums.length)
-                attributes[`${prefix}.range`] =
-                  Math.max(...nums) - Math.min(...nums)
+              if (stats) attributes[`${prefix}.range`] = stats.max - stats.min
               break
             case 'avg':
-              if (nums.length)
-                attributes[`${prefix}.avg`] =
-                  nums.reduce((a, b) => a + b, 0) / nums.length
+              if (stats) attributes[`${prefix}.avg`] = stats.sum / nums.length
               break
             case 'median':
               if (nums.length) {
@@ -978,13 +1012,13 @@ export class FilteringSpanProcessor implements SpanProcessor {
       })
 
       // Copy start values so _enrichSpan can compute deltas
-      const memStart = (readable as any)[MEMORY_KEY]
+      const memStart = memoryMap.get(readable as Span)
       if (memStart != null) {
-        Object.defineProperty(snapshotSpan, MEMORY_KEY, { value: memStart })
+        memoryMap.set(snapshotSpan, memStart)
       }
-      const eluStart = (readable as any)[ELU_KEY]
+      const eluStart = eluMap.get(readable as Span)
       if (eluStart != null) {
-        Object.defineProperty(snapshotSpan, ELU_KEY, { value: eluStart })
+        eluMap.set(snapshotSpan, eluStart)
       }
 
       this._enrichSpan(snapshotSpan)
@@ -1017,7 +1051,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     }
 
     // Event loop utilization
-    const startElu = (span as any)[ELU_KEY]
+    const startElu = eluMap.get(span)
     if (startElu != null) {
       const delta = performance.eventLoopUtilization(startElu)
       span.setAttribute(
@@ -1031,9 +1065,19 @@ export class FilteringSpanProcessor implements SpanProcessor {
       const traceId = span.spanContext().traceId
       if (!span.attributes[OPIN_TEL_INTERNAL.stuck.isSnapshot]) {
         this._rootSpans.delete(traceId)
-        // Write drop/sampled counts to root span
+        // Write captured/drop/sampled counts to root span
         const counts = this._traceCounts.get(traceId)
         if (counts) {
+          if (counts.started > 0)
+            span.setAttribute(
+              OPIN_TEL_INTERNAL.trace.startedSpanCount,
+              counts.started,
+            )
+          if (counts.captured > 0)
+            span.setAttribute(
+              OPIN_TEL_INTERNAL.trace.capturedSpanCount,
+              counts.captured,
+            )
           if (counts.droppedSync > 0)
             span.setAttribute(
               OPIN_TEL_INTERNAL.dropped.syncCount,
@@ -1140,7 +1184,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
           }
           this._setSpanAttr(span, isSpanImpl, 'SampleRate', finalRate)
         }
-        this._wrapped.onEnd(span)
+        this._exportSpan(span)
         return
       }
 
@@ -1210,7 +1254,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
         )
         this._rescuedTraces.delete(traceId)
         this._headDecisions.delete(traceId)
-        this._wrapped.onEnd(span)
+        this._exportSpan(span)
         return
       }
 
@@ -1236,7 +1280,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
             true,
           )
           debug('sampling: rescued span %s in trace %s', span.name, traceId)
-          this._wrapped.onEnd(span)
+          this._exportSpan(span)
           return
         }
         // Drop this span
@@ -1257,7 +1301,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       if (finalRate > 1) {
         this._setSpanAttr(span, isSpanImpl, 'SampleRate', finalRate)
       }
-      this._wrapped.onEnd(span)
+      this._exportSpan(span)
       return
     }
 
@@ -1275,7 +1319,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       }
       this._setSpanAttr(span, isSpanImpl, 'SampleRate', burstRate)
     }
-    this._wrapped.onEnd(span)
+    this._exportSpan(span)
   }
 
   private _computeBurstRate(span: ReadableSpan): number {
@@ -1347,7 +1391,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
           finalRate,
         )
       }
-      this._wrapped.onEnd(buffered)
+      this._exportSpan(buffered)
     }
   }
 
@@ -1424,7 +1468,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
         const buffered = this._conditionalDropBuffer.get(spanId) ?? []
         this._conditionalDropBuffer.delete(spanId)
         for (const child of buffered) {
-          this._wrapped.onEnd(child)
+          this._exportSpan(child)
         }
       }
     }
@@ -1474,9 +1518,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
         span.setAttribute(OPIN_TEL_INTERNAL.memory.rss, rss)
       }
       if (this._memoryDeltaKeys.length) {
-        Object.defineProperty(span, MEMORY_KEY, {
-          value: rss,
-        })
+        memoryMap.set(span, rss)
       }
     } else {
       const memUsage = process.memoryUsage()
@@ -1485,16 +1527,14 @@ export class FilteringSpanProcessor implements SpanProcessor {
           span.setAttribute(OPIN_TEL_INTERNAL.memory[key], memUsage[key])
         }
         if (this._memoryDeltaKeys.length) {
-          Object.defineProperty(span, MEMORY_KEY, {
-            value: memUsage,
-          })
+          memoryMap.set(span, memUsage)
         }
       }
     }
   }
 
   private _captureMemory(span: Span & ReadableSpan) {
-    const startMem = (span as any)[MEMORY_KEY]
+    const startMem = memoryMap.get(span)
     if (startMem != null) {
       if (this._memoryFastPath) {
         span.setAttribute(

@@ -394,14 +394,16 @@ If a span has both `collapse` and `shouldDrop` — whether from `instrumentation
 
 Root spans automatically receive counter attributes tracking drops and sampling decisions within their trace:
 
-| Attribute                            | Description                           |
-| ------------------------------------ | ------------------------------------- |
-| `opin_tel.dropped.sync_count`        | Spans dropped by sync span detection  |
-| `opin_tel.dropped.conditional_count` | Spans dropped by conditional dropping |
-| `opin_tel.dropped.aggregated_count`  | Spans consumed by aggregation         |
-| `opin_tel.sampled.head_count`        | Spans dropped by head sampling        |
-| `opin_tel.sampled.tail_count`        | Spans dropped by tail sampling        |
-| `opin_tel.sampled.burst_count`       | Spans dropped by burst protection     |
+| Attribute                            | Description                             |
+| ------------------------------------ | --------------------------------------- |
+| `opin_tel.trace.started_span_count`  | Total child spans started in this trace |
+| `opin_tel.trace.captured_span_count` | Child spans exported in this trace      |
+| `opin_tel.dropped.sync_count`        | Spans dropped by sync span detection    |
+| `opin_tel.dropped.conditional_count` | Spans dropped by conditional dropping   |
+| `opin_tel.dropped.aggregated_count`  | Spans consumed by aggregation           |
+| `opin_tel.sampled.head_count`        | Spans dropped by head sampling          |
+| `opin_tel.sampled.tail_count`        | Spans dropped by tail sampling          |
+| `opin_tel.sampled.burst_count`       | Spans dropped by burst protection       |
 
 Counters are best-effort — they reflect drops that occurred before the root span ended. Only non-zero counters are written.
 

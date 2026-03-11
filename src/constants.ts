@@ -38,6 +38,10 @@ export const OPIN_TEL_INTERNAL = {
     function: `${prefix}code.function`,
     filename: `${prefix}code.filename`,
   },
+  trace: {
+    startedSpanCount: `${prefix}trace.started_span_count`,
+    capturedSpanCount: `${prefix}trace.captured_span_count`,
+  },
   dropped: {
     syncCount: `${prefix}dropped.sync_count`,
     conditionalCount: `${prefix}dropped.conditional_count`,
