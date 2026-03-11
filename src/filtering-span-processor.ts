@@ -202,6 +202,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
   private _collapseSpans = new Map<string, Span & ReadableSpan>()
   private _rootSpans = new Map<string, ReadableSpan>()
   private _allSpans = new Set<Span>()
+  private _activeSpanIds = new Set<string>()
   private _didShutdown = false
   private _nextTickScheduled = false
   private _currentTick = 0
@@ -317,6 +318,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
   onStart(span: Span & ReadableSpan, ctx: Context): void {
     // Track all spans, for both dead span detection as well as knowing how many spans are open concurrently
     this._allSpans.add(span)
+    this._activeSpanIds.add(span.spanContext().spanId)
     this._incrementTraceCount(span.spanContext().traceId, 'started')
 
     // Track tick for sync span detection
@@ -464,6 +466,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
   onEnd(span: ReadableSpan): void {
     this._allSpans.delete(span as Span)
+    this._activeSpanIds.delete(span.spanContext().spanId)
     this._reportedStuckSpans.delete(span.spanContext().spanId)
 
     // Drop sync spans
@@ -1455,15 +1458,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
     // Evict stale conditional drop entries (leaked spans no longer in _allSpans)
     for (const [spanId, _dropFn] of this._conditionalDropFns) {
-      // Check if the span is still active
-      let found = false
-      for (const s of this._allSpans) {
-        if (s.spanContext().spanId === spanId) {
-          found = true
-          break
-        }
-      }
-      if (!found) {
+      if (!this._activeSpanIds.has(spanId)) {
         this._conditionalDropFns.delete(spanId)
         const buffered = this._conditionalDropBuffer.get(spanId) ?? []
         this._conditionalDropBuffer.delete(spanId)
