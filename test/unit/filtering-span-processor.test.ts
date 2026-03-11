@@ -236,7 +236,9 @@ describe('FilteringSpanProcessor', () => {
         dropSyncSpans: false,
         instrumentationHooks: {
           '@test/rename-start': {
-            onStart: (span) => span.updateName(`prefixed:${span.name}`),
+            onStart: (span) => {
+              span.updateName(`prefixed:${span.name}`)
+            },
           },
         },
       })

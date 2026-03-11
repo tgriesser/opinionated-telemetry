@@ -50,7 +50,9 @@ describe('instrumentationHooks', () => {
       dropSyncSpans: false,
       instrumentationHooks: {
         'test-rename-scope': {
-          onStart: (span) => span.updateName(`prefixed:${span.name}`),
+          onStart: (span) => {
+            span.updateName(`prefixed:${span.name}`)
+          },
         },
       },
     })

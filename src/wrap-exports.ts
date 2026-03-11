@@ -9,6 +9,7 @@ import type {
 } from './types.js'
 import { OPIN_TEL_INTERNAL } from './constants.js'
 import type { Span } from '@opentelemetry/api'
+import type { ReadableSpan } from '@opentelemetry/sdk-trace-base'
 
 const debug = debugLib('opin_tel:wrap-exports')
 
@@ -54,7 +55,7 @@ export function wrapFunction(
       return tracer.startActiveSpan(spanName, (span) => {
         setSpanAttrs(span)
         if (hooks?.onStart) {
-          hooks.onStart(span, hookContext({ args }))
+          hooks.onStart(span as Span & ReadableSpan, hookContext({ args }))
         }
         try {
           const result = fn.apply(this, args)
@@ -64,7 +65,10 @@ export function wrapFunction(
             return result.then(
               (val: any) => {
                 if (hooks?.onEnd) {
-                  hooks.onEnd(span, hookContext({ args, returnValue: val }))
+                  hooks.onEnd(
+                    span as Span & ReadableSpan,
+                    hookContext({ args, returnValue: val }),
+                  )
                 }
                 span.end()
                 return val
@@ -76,7 +80,10 @@ export function wrapFunction(
                   message: err.message,
                 })
                 if (hooks?.onEnd) {
-                  hooks.onEnd(span, hookContext({ args, error: err }))
+                  hooks.onEnd(
+                    span as Span & ReadableSpan,
+                    hookContext({ args, error: err }),
+                  )
                 }
                 span.end()
                 throw err
@@ -85,7 +92,10 @@ export function wrapFunction(
           }
 
           if (hooks?.onEnd) {
-            hooks.onEnd(span, hookContext({ args, returnValue: result }))
+            hooks.onEnd(
+              span as Span & ReadableSpan,
+              hookContext({ args, returnValue: result }),
+            )
           }
           span.end()
           return result
@@ -93,7 +103,10 @@ export function wrapFunction(
           span.recordException(err)
           span.setStatus({ code: SpanStatusCode.ERROR, message: err.message })
           if (hooks?.onEnd) {
-            hooks.onEnd(span, hookContext({ args, error: err }))
+            hooks.onEnd(
+              span as Span & ReadableSpan,
+              hookContext({ args, error: err }),
+            )
           }
           span.end()
           throw err

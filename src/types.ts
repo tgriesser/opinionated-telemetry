@@ -1,5 +1,5 @@
-import type { Span } from '@opentelemetry/api'
 import type {
+  Span,
   SpanExporter,
   SpanLimits,
   SpanProcessor,
@@ -165,7 +165,7 @@ export interface AggregateConfig {
  * - `false` — keep the span and all buffered children
  */
 export type ShouldDropFn = (
-  span: Span,
+  span: Span & ReadableSpan,
   durationMs: number,
 ) => boolean | 'drop' | 'collapse'
 
