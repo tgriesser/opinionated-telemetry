@@ -29,8 +29,11 @@ import type {
 // build output, this import will fail at startup (not silently).
 import { SpanImpl } from '@opentelemetry/sdk-trace-base/build/src/Span.js'
 import { OPIN_TEL_INTERNAL, OPIN_TEL_PREFIX } from './constants.js'
+import { hrTimeToMs, arrayStats } from './utils.js'
 
 const debug = debugLib('opin_tel:filtering-processor')
+
+type HrTime = [number, number]
 
 // WeakMaps for per-span metadata — avoids Object.defineProperty which forces
 // hidden class transitions on SpanImpl objects and defeats V8 inline caches.
@@ -41,25 +44,6 @@ const eluMap = new WeakMap<
   ReturnType<typeof performance.eventLoopUtilization>
 >()
 const aggregateKeyMap = new WeakMap<Span, string>()
-
-type HrTime = [number, number]
-
-function hrTimeToMs(hr: HrTime): number {
-  return hr[0] * 1e3 + hr[1] / 1e6
-}
-
-function arrayStats(arr: number[]): { min: number; max: number; sum: number } {
-  let min = arr[0]
-  let max = arr[0]
-  let sum = arr[0]
-  for (let i = 1; i < arr.length; i++) {
-    const v = arr[i]
-    if (v < min) min = v
-    else if (v > max) max = v
-    sum += v
-  }
-  return { min, max, sum }
-}
 
 interface AttributeTracker {
   sourceAttribute: string
@@ -1071,45 +1055,38 @@ export class FilteringSpanProcessor implements SpanProcessor {
         // Write captured/drop/sampled counts to root span
         const counts = this._traceCounts.get(traceId)
         if (counts) {
-          if (counts.started > 0)
-            span.setAttribute(
-              OPIN_TEL_INTERNAL.trace.startedSpanCount,
-              counts.started,
-            )
+          span.setAttribute(
+            OPIN_TEL_INTERNAL.trace.startedSpanCount,
+            counts.started,
+          )
           span.setAttribute(
             OPIN_TEL_INTERNAL.trace.capturedSpanCount,
             counts.captured + 1,
           )
-          if (counts.droppedSync > 0)
-            span.setAttribute(
-              OPIN_TEL_INTERNAL.dropped.syncCount,
-              counts.droppedSync,
-            )
-          if (counts.droppedConditional > 0)
-            span.setAttribute(
-              OPIN_TEL_INTERNAL.dropped.conditionalCount,
-              counts.droppedConditional,
-            )
-          if (counts.droppedAggregated > 0)
-            span.setAttribute(
-              OPIN_TEL_INTERNAL.dropped.aggregatedCount,
-              counts.droppedAggregated,
-            )
-          if (counts.sampledHead > 0)
-            span.setAttribute(
-              OPIN_TEL_INTERNAL.sampled.headCount,
-              counts.sampledHead,
-            )
-          if (counts.sampledTail > 0)
-            span.setAttribute(
-              OPIN_TEL_INTERNAL.sampled.tailCount,
-              counts.sampledTail,
-            )
-          if (counts.sampledBurst > 0)
-            span.setAttribute(
-              OPIN_TEL_INTERNAL.sampled.burstCount,
-              counts.sampledBurst,
-            )
+          span.setAttribute(
+            OPIN_TEL_INTERNAL.dropped.syncCount,
+            counts.droppedSync,
+          )
+          span.setAttribute(
+            OPIN_TEL_INTERNAL.dropped.conditionalCount,
+            counts.droppedConditional,
+          )
+          span.setAttribute(
+            OPIN_TEL_INTERNAL.dropped.aggregatedCount,
+            counts.droppedAggregated,
+          )
+          span.setAttribute(
+            OPIN_TEL_INTERNAL.sampled.headCount,
+            counts.sampledHead,
+          )
+          span.setAttribute(
+            OPIN_TEL_INTERNAL.sampled.tailCount,
+            counts.sampledTail,
+          )
+          span.setAttribute(
+            OPIN_TEL_INTERNAL.sampled.burstCount,
+            counts.sampledBurst,
+          )
           this._traceCounts.delete(traceId)
         }
         this._droppedSyncSpans.delete(traceId)

@@ -1,5 +1,5 @@
+import type { Span } from '@opentelemetry/api'
 import type {
-  Span,
   SpanExporter,
   SpanLimits,
   SpanProcessor,
@@ -165,7 +165,7 @@ export interface AggregateConfig {
  * - `false` — keep the span and all buffered children
  */
 export type ShouldDropFn = (
-  span: Span & ReadableSpan,
+  span: Span,
   durationMs: number,
 ) => boolean | 'drop' | 'collapse'
 
@@ -178,9 +178,9 @@ export interface OnStartResult {
 
 export interface GlobalHooks {
   /** Called on every span start. Return { collapse } and/or { shouldDrop } to control span behavior. */
-  onStart?: (span: Span & ReadableSpan) => OnStartResult | void
+  onStart?: (span: Span) => OnStartResult | void
   /** Called on every span end, after enrichment. */
-  onEnd?: (span: Span & ReadableSpan, durationMs: number) => void
+  onEnd?: (span: Span, durationMs: number) => void
 }
 
 export interface OpinionatedOptions {
@@ -189,9 +189,9 @@ export interface OpinionatedOptions {
   /** Collapse parallel sibling spans with the same name into a single aggregate span */
   aggregate?: boolean | AggregateConfig
   /** Custom onStart hook. Return { collapse } and/or { shouldDrop } to control span behavior. */
-  onStart?: (span: Span & ReadableSpan) => OnStartResult | void
+  onStart?: (span: Span) => OnStartResult | void
   /** Custom onEnd hook */
-  onEnd?: (span: Span & ReadableSpan, durationMs: number) => void
+  onEnd?: (span: Span, durationMs: number) => void
 }
 
 export interface IgnoreRule {
@@ -206,7 +206,8 @@ export interface AutoInstrumentPath {
   dirs: string[]
 }
 
-export interface AutoInstrumentCallContext {
+export interface AutoInstrumentFunctionContext {
+  type: 'function'
   /** Arguments passed to the wrapped function */
   args: any[]
   /** The export name (or function name for default exports) */
@@ -215,17 +216,28 @@ export interface AutoInstrumentCallContext {
   filename: string
 }
 
+export interface AutoInstrumentMethodContext {
+  type: 'method'
+  /** Arguments passed to the wrapped method */
+  args: any[]
+  /** The class name */
+  className: string
+  /** The method name */
+  methodName: string
+  /** The relative file path (span prefix) */
+  filename: string
+}
+
+export type AutoInstrumentCallContext =
+  | AutoInstrumentFunctionContext
+  | AutoInstrumentMethodContext
+
 export interface AutoInstrumentHooks {
   /** Called after the span is created, before the wrapped function executes. Use to enrich the span with function call context. */
-  onStart?: (
-    span: import('@opentelemetry/api').Span &
-      import('@opentelemetry/sdk-trace-base').ReadableSpan,
-    context: AutoInstrumentCallContext,
-  ) => void
+  onStart?: (span: Span, context: AutoInstrumentCallContext) => void
   /** Called after the wrapped function completes (success or error), before span.end(). */
   onEnd?: (
-    span: import('@opentelemetry/api').Span &
-      import('@opentelemetry/sdk-trace-base').ReadableSpan,
+    span: Span,
     context: AutoInstrumentCallContext & {
       /** The return value of the function (undefined if it threw) */
       returnValue?: any
@@ -235,6 +247,72 @@ export interface AutoInstrumentHooks {
   ) => void
 }
 
+/**
+ * Determines whether a function/method should be wrapped with a span.
+ * Default: checks if fn.constructor.name === 'AsyncFunction'
+ */
+export type ShouldWrapFn = (
+  fn: Function,
+  name: string,
+  filename: string,
+) => boolean
+
+export interface FunctionInstrumentationConfig {
+  /**
+   * Override the default AsyncFunction check for top-level function exports.
+   * Useful for wrapping promise-returning non-async functions.
+   */
+  shouldWrap?: ShouldWrapFn
+
+  /**
+   * Filter which exported functions to instrument.
+   * - string[] — exact export names
+   * - RegExp — test against export name
+   * - (fnName: string, fn: Function, filename: string) => boolean
+   * Default: all functions passing shouldWrap
+   */
+  include?:
+    | string[]
+    | RegExp
+    | ((fnName: string, fn: Function, filename: string) => boolean)
+}
+
+export interface ClassInstrumentationConfig {
+  /**
+   * Override the default AsyncFunction check for class methods.
+   */
+  shouldWrap?: ShouldWrapFn
+
+  /**
+   * Which exported classes to instrument.
+   * - string[] — exact export/class names
+   * - RegExp — test against class name
+   * - (className: string, ClassObj: Function, filename: string) => boolean
+   * Default: all detected classes
+   */
+  includeClass?:
+    | string[]
+    | RegExp
+    | ((className: string, ClassObj: Function, filename: string) => boolean)
+
+  /**
+   * Which prototype methods to instrument on matched classes.
+   * - string[] — exact method names
+   * - RegExp — test against method name
+   * - (methodName: string, className: string, method: Function, filename: string) => boolean
+   * Default: all methods passing shouldWrap
+   */
+  includeMethod?:
+    | string[]
+    | RegExp
+    | ((
+        methodName: string,
+        className: string,
+        method: Function,
+        filename: string,
+      ) => boolean)
+}
+
 export interface AutoInstrumentHookConfig {
   /** Tracer to use for auto-instrumented spans. Default: `trace.getTracer('opin_tel.auto')` */
   tracer?: import('@opentelemetry/api').Tracer
@@ -242,4 +320,16 @@ export interface AutoInstrumentHookConfig {
   ignoreRules?: IgnoreRuleEntry[]
   /** Hooks called on every auto-instrumented function invocation */
   hooks?: AutoInstrumentHooks
+
+  /**
+   * Filter which top-level function exports get wrapped.
+   * If omitted, all async functions are wrapped (current behavior).
+   */
+  functionInstrumentation?: FunctionInstrumentationConfig
+
+  /**
+   * Opt-in class prototype method wrapping.
+   * If omitted, classes are not instrumented.
+   */
+  classInstrumentation?: ClassInstrumentationConfig
 }

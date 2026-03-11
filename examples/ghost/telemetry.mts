@@ -46,7 +46,7 @@ const ghostPath = fs.realpathSync(
   'utf8',
 )
 
-// Add some auto instrumentation to various functions in the
+// Add some auto instrumentation to various functions in the core services layer
 createAutoInstrumentHookCJS({
   instrumentPaths: [
     {
@@ -54,6 +54,27 @@ createAutoInstrumentHookCJS({
       dirs: ['core/server/services'],
     },
   ],
+
+  classInstrumentation: {
+    includeClass(className, ClassObj, filename) {
+      if (filename.includes('/errors/')) {
+        return false
+      }
+      return true
+    },
+    includeMethod(methodName, className, method, filename) {
+      return true
+    },
+  },
+
+  hooks: {
+    onStart(span, context) {
+      //
+    },
+    onEnd(span, context) {
+      //
+    },
+  },
 })
 
 function shutdownOtel() {

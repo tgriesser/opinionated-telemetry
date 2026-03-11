@@ -35,7 +35,10 @@ export const OPIN_TEL_INTERNAL = {
     durationMs: `${prefix}stuck.duration_ms`,
   },
   code: {
+    type: `${prefix}code.type`,
     function: `${prefix}code.function`,
+    class: `${prefix}code.class`,
+    method: `${prefix}code.method`,
     filename: `${prefix}code.filename`,
   },
   trace: {
