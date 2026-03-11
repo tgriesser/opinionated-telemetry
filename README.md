@@ -456,6 +456,38 @@ const unhook = createAutoInstrumentHookESM({
 })
 ```
 
+## Honeycomb Quick Start
+
+The `opinionated-telemetry/honeycomb` entrypoint wires up OTLP trace and metric exporters pointed at Honeycomb with sensible defaults, so you don't need to configure exporters manually.
+
+```ts
+import { honeycombInit } from 'opinionated-telemetry/honeycomb'
+import { HttpInstrumentation } from '@opentelemetry/instrumentation-http'
+
+const { sdk, getTracer, shutdown } = honeycombInit({
+  serviceName: 'my-service',
+  apiKey: process.env.HONEYCOMB_API_KEY!,
+  instrumentations: [new HttpInstrumentation()],
+  // ... other options
+})
+```
+
+This sets up:
+
+- **Trace export** to `https://api.honeycomb.io/v1/traces` with dataset = `serviceName`
+- **Metric export** via `FlatMetricExporter` to `https://api.honeycomb.io/v1/metrics` with dataset = `${serviceName}_metrics`, collected every 60s
+- **Host metrics** enabled by default (CPU, memory, network)
+
+All other `opinionatedTelemetryInit` options are supported (except `traceExporter`, which is configured automatically).
+
+| Option                   | Type      | Default  | Description                                 |
+| ------------------------ | --------- | -------- | ------------------------------------------- |
+| `apiKey`                 | `string`  | required | Honeycomb API key                           |
+| `enableMetricCollection` | `boolean` | `true`   | Set to `false` to disable metric collection |
+| `metricExportInterval`   | `number`  | `60_000` | Metric export interval in milliseconds      |
+
+The entrypoint also re-exports everything from the main `opinionated-telemetry` package, so you can use it as your sole import.
+
 ## Flat Metric Exporter
 
 Honeycomb [merges metric data points into a single event](https://docs.honeycomb.io/manage-data-volume/adjust-granularity/metrics-events) when they share the same timestamp, resource, and data point attributes. But metrics with **different** dimensional attributes (like `v8js.heap.space.name=new_space` vs `v8js.gc.type=major`) end up as separate events.

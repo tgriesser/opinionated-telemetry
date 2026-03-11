@@ -25,6 +25,11 @@
       "require": "./dist/cjs/opentelemetry-instrumentation.js",
       "types": "./dist/esm/opentelemetry-instrumentation.d.ts"
     },
+    "./honeycomb": {
+      "import": "./dist/esm/honeycomb.js",
+      "require": "./dist/cjs/honeycomb.js",
+      "types": "./dist/esm/honeycomb.d.ts"
+    },
     "./metrics": {
       "import": "./dist/esm/metrics.js",
       "require": "./dist/cjs/metrics.js",
@@ -95,6 +100,7 @@
   "dependencies": {
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/core": "^2.6.0",
+    "@opentelemetry/exporter-metrics-otlp-proto": "^0.213.0",
     "@opentelemetry/exporter-trace-otlp-proto": "^0.213.0",
     "@opentelemetry/host-metrics": "^0.38.3",
     "@opentelemetry/instrumentation": "^0.213.0",
