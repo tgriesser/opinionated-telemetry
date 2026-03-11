@@ -456,6 +456,37 @@ const unhook = createAutoInstrumentHookESM({
 })
 ```
 
+#### Auto-instrument hooks
+
+Both CJS and ESM hooks accept an optional `hooks` object with `onStart` and `onEnd` callbacks. These are called on every auto-instrumented function invocation with access to the function's arguments and return value, allowing you to enrich spans with call-specific context.
+
+```ts
+createAutoInstrumentHookCJS({
+  instrumentPaths: [{ base: '/app/src', dirs: ['controllers', 'services'] }],
+  hooks: {
+    onStart: (span, { args, fnName, filename }) => {
+      // Enrich the span before the function executes
+      if (fnName === 'getUser') {
+        span.setAttribute('app.user_id', args[0])
+      }
+    },
+    onEnd: (span, { args, returnValue, error, fnName, filename }) => {
+      // Enrich the span after the function completes
+      if (returnValue?.rows) {
+        span.setAttribute('app.row_count', returnValue.rows.length)
+      }
+    },
+  },
+})
+```
+
+| Callback  | Arguments                                                  | Description                                                             |
+| --------- | ---------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `onStart` | `(span, { args, fnName, filename })`                       | Called after span creation, before the wrapped function executes        |
+| `onEnd`   | `(span, { args, fnName, filename, returnValue?, error? })` | Called after the function completes (success or error), before span end |
+
+These hooks are for span enrichment only — use `globalHooks` or `instrumentationHooks` on the `FilteringSpanProcessor` for span lifecycle control (collapse, conditional dropping, etc.).
+
 ## Honeycomb Quick Start
 
 The `opinionated-telemetry/honeycomb` entrypoint wires up OTLP trace and metric exporters pointed at Honeycomb with sensible defaults, so you don't need to configure exporters manually.

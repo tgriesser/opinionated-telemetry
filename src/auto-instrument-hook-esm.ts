@@ -24,7 +24,7 @@ const debug = debugLib('opin_tel:auto-instrument-esm')
 export function createAutoInstrumentHookESM(
   config: AutoInstrumentHookConfig,
 ): () => void {
-  const { instrumentPaths, ignoreRules = [] } = config
+  const { instrumentPaths, ignoreRules = [], hooks } = config
   const getTracer = () =>
     config.tracer ?? trace.getTracer(`${OPIN_TEL_PREFIX}auto`)
   const matchers = buildMatchers(instrumentPaths)
@@ -59,7 +59,7 @@ export function createAutoInstrumentHookESM(
     const relativePath = matchPath(resolvedPath, matchers)
     if (relativePath) {
       debug('wrapping ESM module: %s', relativePath)
-      wrapModuleExports(exported, relativePath, getTracer(), ignoreRules)
+      wrapModuleExports(exported, relativePath, getTracer(), ignoreRules, hooks)
     }
   })
 

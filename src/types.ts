@@ -206,9 +206,40 @@ export interface AutoInstrumentPath {
   dirs: string[]
 }
 
+export interface AutoInstrumentCallContext {
+  /** Arguments passed to the wrapped function */
+  args: any[]
+  /** The export name (or function name for default exports) */
+  fnName: string
+  /** The relative file path (span prefix) */
+  filename: string
+}
+
+export interface AutoInstrumentHooks {
+  /** Called after the span is created, before the wrapped function executes. Use to enrich the span with function call context. */
+  onStart?: (
+    span: import('@opentelemetry/api').Span &
+      import('@opentelemetry/sdk-trace-base').ReadableSpan,
+    context: AutoInstrumentCallContext,
+  ) => void
+  /** Called after the wrapped function completes (success or error), before span.end(). */
+  onEnd?: (
+    span: import('@opentelemetry/api').Span &
+      import('@opentelemetry/sdk-trace-base').ReadableSpan,
+    context: AutoInstrumentCallContext & {
+      /** The return value of the function (undefined if it threw) */
+      returnValue?: any
+      /** The error thrown by the function, if any */
+      error?: any
+    },
+  ) => void
+}
+
 export interface AutoInstrumentHookConfig {
   /** Tracer to use for auto-instrumented spans. Default: `trace.getTracer('opin_tel.auto')` */
   tracer?: import('@opentelemetry/api').Tracer
   instrumentPaths: AutoInstrumentPath[]
   ignoreRules?: IgnoreRuleEntry[]
+  /** Hooks called on every auto-instrumented function invocation */
+  hooks?: AutoInstrumentHooks
 }

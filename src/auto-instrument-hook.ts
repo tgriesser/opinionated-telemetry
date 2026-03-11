@@ -11,7 +11,7 @@ const debug = debugLib('opin_tel:auto-instrument')
 export function createAutoInstrumentHookCJS(
   config: AutoInstrumentHookConfig,
 ): void {
-  const { instrumentPaths, ignoreRules = [] } = config
+  const { instrumentPaths, ignoreRules = [], hooks } = config
   const getTracer = () =>
     config.tracer ?? trace.getTracer(`${OPIN_TEL_PREFIX}auto`)
   const matchers = buildMatchers(instrumentPaths)
@@ -47,7 +47,13 @@ export function createAutoInstrumentHookCJS(
     const relativePath = matchPath(resolvedPath, matchers)
     if (relativePath) {
       debug('wrapping module: %s', relativePath)
-      return wrapModuleExports(result, relativePath, getTracer(), ignoreRules)
+      return wrapModuleExports(
+        result,
+        relativePath,
+        getTracer(),
+        ignoreRules,
+        hooks,
+      )
     }
 
     return result
