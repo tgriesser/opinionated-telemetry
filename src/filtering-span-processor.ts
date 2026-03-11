@@ -658,7 +658,9 @@ export class FilteringSpanProcessor implements SpanProcessor {
         ;(child as SpanImpl)['_ended'] = false
       }
       if (inheritAttrs) {
-        for (const [key, val] of Object.entries(span.attributes)) {
+        const attrs = span.attributes
+        for (const key in attrs) {
+          const val = attrs[key]
           if (!(child as ReadableSpan).attributes[key] && val != null) {
             ;(child as Span & ReadableSpan).setAttribute(key, val)
           }
@@ -1131,7 +1133,9 @@ export class FilteringSpanProcessor implements SpanProcessor {
           parentSpanId,
           collapsedSpan.parentSpanContext?.spanId,
         )
-        for (const [key, val] of Object.entries(collapsedSpan.attributes)) {
+        const collapsedAttrs = collapsedSpan.attributes
+        for (const key in collapsedAttrs) {
+          const val = collapsedAttrs[key]
           if (!span.attributes[key] && val != null) {
             span.setAttribute(key, val)
           }
