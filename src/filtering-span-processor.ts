@@ -1076,11 +1076,10 @@ export class FilteringSpanProcessor implements SpanProcessor {
               OPIN_TEL_INTERNAL.trace.startedSpanCount,
               counts.started,
             )
-          if (counts.captured > 0)
-            span.setAttribute(
-              OPIN_TEL_INTERNAL.trace.capturedSpanCount,
-              counts.captured,
-            )
+          span.setAttribute(
+            OPIN_TEL_INTERNAL.trace.capturedSpanCount,
+            counts.captured + 1,
+          )
           if (counts.droppedSync > 0)
             span.setAttribute(
               OPIN_TEL_INTERNAL.dropped.syncCount,
