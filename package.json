@@ -3,6 +3,7 @@
   "version": "0.0.1",
   "description": "Opinionated OpenTelemetry: We've thought a lot about Telemetry in Node.js, so you don't have to",
   "license": "MIT",
+  "sideEffects": false,
   "type": "module",
   "exports": {
     ".": {
@@ -79,7 +80,6 @@
   "module": "./dist/esm/index.js",
   "types": "./dist/esm/index.d.ts",
   "files": [
-    "README.md",
     "dist",
     "src",
     "LICENSE"
@@ -99,8 +99,11 @@
     "test:watch": "vitest",
     "watch": "concurrently 'npm run build:cjs -- --watch' 'npm run build:esm -- --watch'"
   },
+  "lint-staged": {
+    "package.json": "sort-package-json",
+    "*.{ts,md,json}": "prettier --write"
+  },
   "dependencies": {
-    "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/core": "^2.6.0",
     "@opentelemetry/exporter-metrics-otlp-proto": "^0.213.0",
     "@opentelemetry/exporter-trace-otlp-proto": "^0.213.0",
@@ -113,6 +116,7 @@
     "debug": "^4.4.3"
   },
   "devDependencies": {
+    "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/context-async-hooks": "^2.6.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/debug": "^4.1.12",
@@ -131,11 +135,15 @@
     "prettier": "^3.0.0",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
+    "sort-package-json": "^3.6.1",
     "supertest": "^7.2.2",
     "typescript": "^5.5.0",
     "vitest": "^4.0.18"
   },
-  "lint-staged": {
-    "*.{ts,md,json}": "prettier --write"
+  "peerDependencies": {
+    "@opentelemetry/api": "^1.9.0"
+  },
+  "engines": {
+    "node": ">=20.15.0"
   }
 }
