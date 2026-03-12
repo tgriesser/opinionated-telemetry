@@ -326,7 +326,7 @@ export interface WrapModuleExportsConfig {
  *   - exports.bar = fn     → span uses export key
  */
 export function wrapModuleExports(
-  exports: Record<string, any>,
+  moduleExports: Record<string, any>,
   spanPrefix: string,
   tracer: Tracer,
   ignoreRules: IgnoreRuleEntry[] = [],
@@ -334,14 +334,14 @@ export function wrapModuleExports(
   functionInstrumentation?: FunctionInstrumentationConfig,
   classInstrumentation?: ClassInstrumentationConfig,
 ): Record<string, any> {
-  if (!exports) {
-    return exports
+  if (!moduleExports) {
+    return moduleExports
   }
 
   // Handle module.exports = function or module.exports = class
-  if (typeof exports === 'function') {
+  if (typeof moduleExports === 'function') {
     return wrapDirectExport(
-      exports,
+      moduleExports,
       spanPrefix,
       tracer,
       ignoreRules,
@@ -351,18 +351,18 @@ export function wrapModuleExports(
     )
   }
 
-  if (typeof exports !== 'object') {
-    return exports
+  if (typeof moduleExports !== 'object') {
+    return moduleExports
   }
 
   const fnShouldWrap = functionInstrumentation?.shouldWrap ?? defaultShouldWrap
   const classShouldWrap = classInstrumentation?.shouldWrap ?? defaultShouldWrap
 
-  const keys = Object.getOwnPropertyNames(exports)
+  const keys = Object.getOwnPropertyNames(moduleExports)
   for (const key of keys) {
     if (key === '__esModule') continue
 
-    const desc = Object.getOwnPropertyDescriptor(exports, key)
+    const desc = Object.getOwnPropertyDescriptor(moduleExports, key)
     // Skip getters/setters to avoid triggering side effects
     if (!desc || !('value' in desc)) continue
 
@@ -440,7 +440,7 @@ export function wrapModuleExports(
 
     const fnName = key === 'default' ? value.name || 'default' : key
     debug('wrapping %s:%s', spanPrefix, fnName)
-    exports[key] = wrapFunction(
+    moduleExports[key] = wrapFunction(
       value,
       fnName,
       { type: 'function', fnName, filename: spanPrefix },
@@ -449,5 +449,5 @@ export function wrapModuleExports(
     )
   }
 
-  return exports
+  return moduleExports
 }
