@@ -51,23 +51,24 @@ export function otelCreateExpressMiddleware(config?: ExpressOtelConfig) {
     if (!enabled) return next()
 
     const span = trace.getActiveSpan()
+    if (!span) return next()
 
     const baggageEntries: Record<string, unknown> = {}
 
     const setAttribute = (key: string, val: string | number | boolean) => {
-      span?.setAttribute(key, val)
+      span.setAttribute(key, val)
     }
 
     const setAsBaggage = (key: string, val: string | number | boolean) => {
       baggageEntries[key] = val
-      span?.setAttribute(key, val)
+      span.setAttribute(key, val)
     }
 
     // Capture request basics
-    span?.setAttribute('req.method', req.method)
-    span?.setAttribute('req.path', req.path)
+    span.setAttribute('req.method', req.method)
+    span.setAttribute('req.path', req.path)
     if (req.originalUrl !== req.path) {
-      span?.setAttribute('req.qs', req.originalUrl.slice(req.path.length))
+      span.setAttribute('req.qs', req.originalUrl.slice(req.path.length))
     }
 
     // Capture headers

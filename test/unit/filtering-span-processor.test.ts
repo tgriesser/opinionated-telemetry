@@ -6,24 +6,41 @@ describe('FilteringSpanProcessor', () => {
   afterEach(() => cleanupOtel())
 
   describe('sync span dropping', () => {
-    it('drops spans that start and end in the same tick', async () => {
+    it('drops child spans that start and end in the same tick', async () => {
       const { tracer, getSpans, shutdown, exporter } = createTestProvider()
 
-      // Sync span — starts and ends in same tick
-      const span = tracer.startSpan('sync-span')
+      const root = tracer.startSpan('root')
+      const ctx = trace.setSpan(context.active(), root)
+
+      // Sync child span — starts and ends in same tick
+      const span = tracer.startSpan('sync-span', {}, ctx)
       span.end()
 
       await nextTick()
 
-      // Async span — crosses a tick boundary
-      const asyncSpan = tracer.startSpan('async-span')
+      // Async child span — crosses a tick boundary
+      const asyncSpan = tracer.startSpan('async-span', {}, ctx)
       await nextTick()
       asyncSpan.end()
 
+      root.end()
       await shutdown()
 
       exporter.assertSpanNotExists('sync-span')
       exporter.assertSpanExists('async-span')
+    })
+
+    it('keeps sync root spans by default', async () => {
+      const { tracer, getSpans, shutdown, exporter } = createTestProvider()
+
+      // Root span that starts and ends in the same tick
+      const root = tracer.startSpan('sync-root')
+      root.end()
+
+      await nextTick()
+      await shutdown()
+
+      exporter.assertSpanExists('sync-root')
     })
 
     it('keeps all spans when dropSyncSpans is false', async () => {
@@ -1914,8 +1931,11 @@ describe('FilteringSpanProcessor', () => {
         onDroppedSpan,
       })
 
-      const span = tracer.startSpan('sync-span')
+      const root = tracer.startSpan('root')
+      const ctx = trace.setSpan(context.active(), root)
+      const span = tracer.startSpan('sync-span', {}, ctx)
       span.end() // ends in the same tick → sync drop
+      root.end()
 
       await shutdown()
 

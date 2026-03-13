@@ -491,7 +491,8 @@ export class FilteringSpanProcessor implements SpanProcessor {
       const shouldDropSync =
         typeof this._config.dropSyncSpans === 'function'
           ? this._config.dropSyncSpans(span as Span & ReadableSpan)
-          : tickMap.get(span as Span) === this._currentTick
+          : span.parentSpanContext != null &&
+            tickMap.get(span as Span) === this._currentTick
       if (shouldDropSync) {
         debug('dropping sync span: %s', span.name)
         let traceDropped = this._droppedSyncSpans.get(traceId)
