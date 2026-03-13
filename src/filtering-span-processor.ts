@@ -1073,7 +1073,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       scope: template.instrumentationScope,
       context: ROOT_CONTEXT,
       spanContext,
-      name: template.name,
+      name: `${template.name} (batched)`,
       kind: template.kind,
       parentSpanContext: template.parentSpanContext,
       links: [],

@@ -1947,7 +1947,7 @@ describe('FilteringSpanProcessor', () => {
       await shutdown()
 
       const spans = exporter.spans
-      const s3Spans = spans.filter((s) => s.name === 'S3.GetObject')
+      const s3Spans = spans.filter((s) => s.name === 'S3.GetObject (batched)')
 
       // Should be 1 aggregate span, not 5
       expect(s3Spans).toHaveLength(1)
@@ -1989,23 +1989,21 @@ describe('FilteringSpanProcessor', () => {
       await shutdown()
 
       const spans = exporter.spans
-      const dbSpans = spans.filter((s) => s.name === 'db.query')
+      const dbErrorSpans = spans.filter((s) => s.name === 'db.query')
+      const dbAggSpans = spans.filter((s) => s.name === 'db.query (batched)')
 
-      // 1 aggregate + 1 error span exported individually
-      expect(dbSpans).toHaveLength(2)
+      // 1 error span exported individually + 1 aggregate
+      expect(dbErrorSpans).toHaveLength(1)
+      expect(dbAggSpans).toHaveLength(1)
 
-      const errorSpan = dbSpans.find(
-        (s) => s.status.code === SpanStatusCode.ERROR,
-      )
-      expect(errorSpan).toBeDefined()
-      expect(errorSpan!.status.message).toBe('timeout')
+      const errorSpan = dbErrorSpans[0]
+      expect(errorSpan.status.code).toBe(SpanStatusCode.ERROR)
+      expect(errorSpan.status.message).toBe('timeout')
 
-      const agg = dbSpans.find(
-        (s) => s.attributes['opin_tel.agg.count'] !== undefined,
-      )
+      const agg = dbAggSpans[0]
       expect(agg).toBeDefined()
-      expect(agg!.attributes['opin_tel.agg.count']).toBe(3)
-      expect(agg!.attributes['opin_tel.agg.error_count']).toBe(1)
+      expect(agg.attributes['opin_tel.agg.count']).toBe(3)
+      expect(agg.attributes['opin_tel.agg.error_count']).toBe(1)
     })
 
     it('exports single non-error span as-is without aggregate wrapper', async () => {
@@ -2092,7 +2090,9 @@ describe('FilteringSpanProcessor', () => {
       await shutdown()
 
       const spans = exporter.spans
-      const dlSpans = spans.filter((s) => s.name === 'dataloader.load')
+      const dlSpans = spans.filter(
+        (s) => s.name === 'dataloader.load (batched)',
+      )
 
       expect(dlSpans).toHaveLength(1)
       expect(dlSpans[0].attributes['opin_tel.agg.count']).toBe(3)
@@ -2189,7 +2189,7 @@ describe('FilteringSpanProcessor', () => {
       const emittedCalls = wrappedOnEnd.mock.calls
       const aggCall = emittedCalls.find(
         ([s]: any) =>
-          s.name === 'batch' &&
+          s.name === 'batch (batched)' &&
           s.attributes?.['opin_tel.agg.count'] !== undefined,
       )
       expect(aggCall).toBeDefined()
@@ -2260,7 +2260,9 @@ describe('FilteringSpanProcessor', () => {
       await shutdown()
 
       const spans = exporter.spans
-      expect(spans.filter((s) => s.name === 'S3.GetObject')).toHaveLength(1)
+      expect(
+        spans.filter((s) => s.name === 'S3.GetObject (batched)'),
+      ).toHaveLength(1)
       expect(spans.filter((s) => s.name === 'db.query')).toHaveLength(1)
       expect(
         spans.find((s) => s.name === 'db.query')!.attributes[
@@ -2460,7 +2462,7 @@ describe('FilteringSpanProcessor', () => {
       await shutdown()
 
       const spans = exporter.spans
-      const rpcSpans = spans.filter((s) => s.name === 'rpc.call')
+      const rpcSpans = spans.filter((s) => s.name === 'rpc.call (batched)')
 
       // Both consumed into aggregate, no individual error span
       expect(rpcSpans).toHaveLength(1)
@@ -2530,7 +2532,9 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const dbSpans = exporter.spans.filter((s) => s.name === 'db.query')
+      const dbSpans = exporter.spans.filter(
+        (s) => s.name === 'db.query (batched)',
+      )
       // All 5 sequential spans should be in 1 aggregate, not 5 separate ones
       expect(dbSpans).toHaveLength(1)
       expect(dbSpans[0].attributes['opin_tel.agg.count']).toBe(5)
@@ -2558,7 +2562,9 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const batchSpans = exporter.spans.filter((s) => s.name === 'batch.item')
+      const batchSpans = exporter.spans.filter(
+        (s) => s.name === 'batch.item' || s.name === 'batch.item (batched)',
+      )
       // 3 chunks of 3 + 1 remainder of 1 (single-span optimization) = 4 spans
       expect(batchSpans).toHaveLength(4)
 
@@ -2609,7 +2615,9 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const workSpans = exporter.spans.filter((s) => s.name === 'work')
+      const workSpans = exporter.spans.filter(
+        (s) => s.name === 'work' || s.name === 'work (batched)',
+      )
       // 2 chunks of 2 + 1 remainder of 1 (single-span optimization) = 3
       expect(workSpans).toHaveLength(3)
       const aggSpans = workSpans.filter(
@@ -2647,7 +2655,9 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const fetchSpans = exporter.spans.filter((s) => s.name === 'fetch')
+      const fetchSpans = exporter.spans.filter(
+        (s) => s.name === 'fetch' || s.name === 'fetch (batched)',
+      )
       // 2 chunks of 2 + 1 remainder of 1 (single-span optimization) = 3 spans
       expect(fetchSpans).toHaveLength(3)
 
@@ -2688,21 +2698,21 @@ describe('FilteringSpanProcessor', () => {
 
       await shutdown()
 
-      const taskSpans = exporter.spans.filter((s) => s.name === 'task')
-      // 1 aggregate (2 non-errors) + 1 individual error = 2
-      expect(taskSpans).toHaveLength(2)
-
-      const errorSpan = taskSpans.find(
-        (s) => s.status.code === SpanStatusCode.ERROR,
+      const taskErrorSpans = exporter.spans.filter((s) => s.name === 'task')
+      const taskAggSpans = exporter.spans.filter(
+        (s) => s.name === 'task (batched)',
       )
-      expect(errorSpan).toBeDefined()
+      // 1 individual error + 1 aggregate
+      expect(taskErrorSpans).toHaveLength(1)
+      expect(taskAggSpans).toHaveLength(1)
 
-      const agg = taskSpans.find(
-        (s) => s.attributes['opin_tel.meta.is_aggregate'],
-      )
+      const errorSpan = taskErrorSpans[0]
+      expect(errorSpan.status.code).toBe(SpanStatusCode.ERROR)
+
+      const agg = taskAggSpans[0]
       expect(agg).toBeDefined()
-      expect(agg!.attributes['opin_tel.agg.count']).toBe(3)
-      expect(agg!.attributes['opin_tel.agg.error_count']).toBe(1)
+      expect(agg.attributes['opin_tel.agg.count']).toBe(3)
+      expect(agg.attributes['opin_tel.agg.error_count']).toBe(1)
     })
 
     it('emit: onParentEnd single-span optimization exports original directly', async () => {
