@@ -14,7 +14,7 @@ Best suited for & meant use with [Honeycomb.io](https://www.honeycomb.io/). Virt
 ## Features
 
 - **Stuck span detection**: detects in-flight spans exceeding a threshold and exports early "diagnostic" span snapshots, so you can understand what might be broken sooner (long queries, hung requests, etc.)
-- **Sync span dropping**: automatically drops "synchronous" spans that are start and end in the same tick by default, configurable to allow for keeping specific spans e.g. keeping sync spans > `100ms`, or spans with a certain name, etc.
+- **Sync span dropping**: automatically drops non-root "synchronous" spans that start and end in the same tick by default (root spans are always kept). Configurable to allow for keeping specific spans e.g. keeping sync spans > `100ms`, or spans with a certain name, etc.
 - **Span collapsing**: allows us to drop intermediate spans (e.g. knex, graphql) and merge their attributes into child spans. No use having both a `knex` span that has a single nested `pg` or `mysql` span underneath, unless there is an error in the `knex` span or something
 - **Conditional span dropping**: tail-based conditional dropping with child buffering — register a `shouldDrop` callback at span start, evaluate at span end based on duration/error/attributes, with automatic child reparenting. Supports both simple drop (no attribute inheritance) and collapse mode (inherit attributes into children)
 - **Baggage propagation**: propagates baggage entries as span attributes on all child spans by default, with outbound baggage suppressed to prevent leaking sensitive data to external APIs (opt-in allowlisting by host and key)
@@ -76,7 +76,7 @@ opinionatedTelemetryInit({
   autoDetectResources?: boolean,
   idGenerator?: IdGenerator,
   spanLimits?: SpanLimits,
-  dropSyncSpans?: true | ((span) => boolean),        // default: true
+  dropSyncSpans?: true | ((span) => boolean),        // default: true (root spans always kept)
   baggageToAttributes?: boolean,                     // default: true
   memory?: boolean | MemoryConfig,              // default: true (rss only)
   memoryDelta?: boolean | MemoryConfig,              // default: true (rss only)
@@ -138,9 +138,20 @@ stuckSpanDetection: {
 }
 ```
 
-Stuck span snapshots are exported with the original span's trace/span IDs, an `(incomplete)` name suffix, and attributes `opin_tel.stuck.duration_ms`, `opin_tel.stuck.is_snapshot`, and `opin_tel.stuck.reported_count`. They also receive memory delta, ELU, and instrumentation hook enrichment.
+Stuck span snapshots are exported with the original span's trace ID, a **unique snapshot span ID** (to avoid backend deduplication), an `(incomplete)` name suffix, and attributes:
+
+| Attribute                       | Description                                           |
+| ------------------------------- | ----------------------------------------------------- |
+| `opin_tel.stuck.duration_ms`    | How long the span has been in-flight                  |
+| `opin_tel.stuck.is_snapshot`    | `true` on snapshots, `false` on the real span         |
+| `opin_tel.stuck.reported_count` | Number of times this span has been reported (1-based) |
+| `opin_tel.stuck.source_span_id` | The original span's ID (links snapshot to source)     |
+
+Snapshots also receive memory delta, ELU, and instrumentation hook enrichment. Re-reports are throttled — after first detection, the next report waits a full `thresholdMs` from the last report time.
 
 **Eviction** (`'evict'` / `'drop'`): Removes the span from all internal tracking (`_allSpans`, `_activeSpanIds`, `_reportedStuckSpans`, collapse state, conditional drop buffers). This prevents memory leaks from spans whose `.end()` is never called. If the span later has `.end()` called, it flows through the normal export path (the eviction is a no-op for cleanup). `'drop'` also fires `onDroppedSpan` with reason `'stuck'`.
+
+**Interaction with collapse and shouldDrop:** If a span is marked for collapse or has a `shouldDrop` callback, but is detected as stuck, the stuck status takes precedence — the span is exported as a snapshot. When the real span finally ends, it's exported with `opin_tel.stuck.is_snapshot = false` to indicate it was previously reported as stuck.
 
 #### `batchProcessorConfig`
 
@@ -494,34 +505,76 @@ const unhook = createAutoInstrumentHookESM({
 })
 ```
 
+#### Filtering function wrapping
+
+By default, all async function exports are wrapped. Use `functionInstrumentation` to customize:
+
+```ts
+createAutoInstrumentHookCJS({
+  instrumentPaths: [{ base: '/app/src', dirs: ['controllers'] }],
+  functionInstrumentation: {
+    // Override the default AsyncFunction check (e.g. wrap promise-returning non-async fns)
+    shouldWrap: (fn, name, filename) => fn.constructor.name === 'AsyncFunction',
+    // Filter which exports to instrument: string[], RegExp, or function
+    include: ['getUser', 'createOrder'],
+  },
+})
+```
+
+#### Class method instrumentation
+
+Class method wrapping is opt-in via `classInstrumentation`. Spans are named `filename/ClassName.methodName`.
+
+```ts
+createAutoInstrumentHookCJS({
+  instrumentPaths: [{ base: '/app/src', dirs: ['services'] }],
+  classInstrumentation: {
+    // Which classes to instrument (string[], RegExp, or function)
+    includeClass: /Service$/,
+    // Which methods to instrument (string[], RegExp, or function). Default: all async methods.
+    includeMethod: (methodName) => !methodName.startsWith('_'),
+    // Override the default AsyncFunction check
+    shouldWrap: (fn, name, filename) => fn.constructor.name === 'AsyncFunction',
+  },
+})
+```
+
 #### Auto-instrument hooks
 
 Both CJS and ESM hooks accept an optional `hooks` object with `onStart` and `onEnd` callbacks. These are called on every auto-instrumented function invocation with access to the function's arguments and return value, allowing you to enrich spans with call-specific context.
+
+The context object is a discriminated union — check `context.type` to determine whether it's a function or method call:
 
 ```ts
 createAutoInstrumentHookCJS({
   instrumentPaths: [{ base: '/app/src', dirs: ['controllers', 'services'] }],
   hooks: {
-    onStart: (span, { args, fnName, filename }) => {
-      // Enrich the span before the function executes
-      if (fnName === 'getUser') {
-        span.setAttribute('app.user_id', args[0])
+    onStart: (span, context) => {
+      if (context.type === 'function') {
+        // context.fnName, context.filename, context.args
+        if (context.fnName === 'getUser') {
+          span.setAttribute('app.user_id', context.args[0])
+        }
+      } else {
+        // context.type === 'method'
+        // context.className, context.methodName, context.filename, context.args
+        span.setAttribute('app.class', context.className)
       }
     },
-    onEnd: (span, { args, returnValue, error, fnName, filename }) => {
-      // Enrich the span after the function completes
-      if (returnValue?.rows) {
-        span.setAttribute('app.row_count', returnValue.rows.length)
+    onEnd: (span, context) => {
+      // context also has: returnValue?, error?
+      if (context.returnValue?.rows) {
+        span.setAttribute('app.row_count', context.returnValue.rows.length)
       }
     },
   },
 })
 ```
 
-| Callback  | Arguments                                                  | Description                                                             |
-| --------- | ---------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `onStart` | `(span, { args, fnName, filename })`                       | Called after span creation, before the wrapped function executes        |
-| `onEnd`   | `(span, { args, fnName, filename, returnValue?, error? })` | Called after the function completes (success or error), before span end |
+| Callback  | Context fields (function)                        | Context fields (method)                                         |
+| --------- | ------------------------------------------------ | --------------------------------------------------------------- |
+| `onStart` | `type: 'function'`, `args`, `fnName`, `filename` | `type: 'method'`, `args`, `className`, `methodName`, `filename` |
+| `onEnd`   | Same as onStart + `returnValue?`, `error?`       | Same as onStart + `returnValue?`, `error?`                      |
 
 These hooks are for span enrichment only — use `globalHooks` or `instrumentationHooks` on the `FilteringSpanProcessor` for span lifecycle control (collapse, conditional dropping, etc.).
 
@@ -688,9 +741,9 @@ opinionatedTelemetryInit({
 })
 ```
 
-**Head-based** sampling calls `sample` once per root span and returns a 1-in-N rate. Spans are dropped immediately if sampled out. `mustKeepSpan` can rescue individual important spans (e.g. errors) by reparenting them to the root with `SampleRate=1`.
+**Head-based** sampling calls `sample` once per root span and returns a 1-in-N rate. Spans are dropped immediately if sampled out. `mustKeepSpan(span, durationMs)` can rescue individual important spans (e.g. errors, slow spans) by reparenting them to the root with `SampleRate=1`.
 
-**Tail-based** sampling buffers all spans until the root ends, then calls `sample` with a `TraceSummary` containing error counts, duration, and span count. `mustKeepSpan` flags a trace for guaranteed keeping without short-circuiting the buffer. Safety valves (`maxTraces`, `maxAgeMs`, `maxSpansPerTrace`) prevent unbounded memory growth.
+**Tail-based** sampling buffers all spans until the root ends, then calls `sample` with a `TraceSummary` containing error counts, duration, and span count. `mustKeepSpan(span, durationMs)` flags a trace for guaranteed keeping without short-circuiting the buffer. Safety valves (`maxTraces`, `maxAgeMs`, `maxSpansPerTrace`) prevent unbounded memory growth.
 
 **Burst protection** uses an exponential moving average to detect per-key span rate spikes and automatically applies a sample rate when throughput exceeds the threshold. No manual rate configuration needed.
 
