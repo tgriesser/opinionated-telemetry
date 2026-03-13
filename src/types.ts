@@ -29,7 +29,7 @@ export interface HeadSamplingConfig {
    * - Both get SampleRate=1 and opin_tel.meta.incomplete_trace=true
    * - Other sampled-out spans continue to be dropped
    */
-  mustKeepSpan?: (span: ReadableSpan) => boolean
+  mustKeepSpan?: (span: ReadableSpan, durationMs: number) => boolean
 }
 
 export interface TailSamplingConfig {
@@ -43,7 +43,7 @@ export interface TailSamplingConfig {
    * trace as must-keep. Buffering continues until root ends, but the final
    * rate is clamped to 1 (always keep).
    */
-  mustKeepSpan?: (span: ReadableSpan) => boolean
+  mustKeepSpan?: (span: ReadableSpan, durationMs: number) => boolean
   /** Max traces in buffer. Oldest evicted when exceeded. Default: 1000 */
   maxTraces?: number
   /** Max buffer age in ms. Entries evicted after this. Default: 120_000 */

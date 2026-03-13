@@ -477,13 +477,13 @@ export class FilteringSpanProcessor implements SpanProcessor {
     const isSpanImpl = span instanceof SpanImpl
     if (isSpanImpl) {
       // Reopen the span for additional modifications in the onEnd
-      ;(span as SpanImpl)['_ended'] = false
+      span['_ended'] = false
     }
 
     this._enrichSpan(span as Span & ReadableSpan)
 
     if (isSpanImpl) {
-      ;(span as SpanImpl)['_ended'] = true
+      span['_ended'] = true
     }
 
     // Collapse drop decision (not part of enrichment)
@@ -541,7 +541,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       this._samplingEvictionInterval = null
     }
     // Flush conditional drop buffers (no decision = keep all)
-    for (const [spanId, buffered] of this._conditionalDropBuffer) {
+    for (const [_spanId, buffered] of this._conditionalDropBuffer) {
       for (const child of buffered) {
         this._exportSpan(child)
       }
@@ -639,13 +639,13 @@ export class FilteringSpanProcessor implements SpanProcessor {
     for (const child of buffered) {
       const isChildImpl = child instanceof SpanImpl
       if (isChildImpl) {
-        ;(child as SpanImpl)['_ended'] = false
+        child['_ended'] = false
       }
       if (inheritAttrs) {
         const attrs = span.attributes
         for (const key in attrs) {
           const val = attrs[key]
-          if (!(child as ReadableSpan).attributes[key] && val != null) {
+          if (!child.attributes[key] && val != null) {
             ;(child as Span & ReadableSpan).setAttribute(key, val)
           }
         }
@@ -653,10 +653,10 @@ export class FilteringSpanProcessor implements SpanProcessor {
       // @ts-expect-error — readonly, reparenting buffered child
       child['parentSpanContext'] = span.parentSpanContext
       if (isChildImpl) {
-        ;(child as SpanImpl)['_ended'] = true
+        child['_ended'] = true
       }
       // If new parent also has conditional drop, re-buffer
-      const newParentId = (child as ReadableSpan).parentSpanContext?.spanId
+      const newParentId = child.parentSpanContext?.spanId
       if (newParentId && this._conditionalDropFns.has(newParentId)) {
         let parentBuf = this._conditionalDropBuffer.get(newParentId)
         if (!parentBuf) {
@@ -877,9 +877,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     if (group.attrTrackers) {
       for (const [outputKey, tracker] of group.attrTrackers) {
         const prefix = `${OPIN_TEL_PREFIX}agg.${outputKey}`
-        const nums = tracker.values.filter(
-          (v) => typeof v === 'number',
-        ) as number[]
+        const nums = tracker.values.filter((v) => typeof v === 'number')
 
         const opts = tracker.options
         // Single-pass stats computed once per tracker when any numeric option is needed
@@ -926,8 +924,8 @@ export class FilteringSpanProcessor implements SpanProcessor {
                 const mid = Math.floor(sorted.length / 2)
                 attributes[`${prefix}.median`] =
                   sorted.length % 2
-                    ? sorted[mid]!
-                    : (sorted[mid - 1]! + sorted[mid]!) / 2
+                    ? sorted[mid]
+                    : (sorted[mid - 1] + sorted[mid]) / 2
               }
               break
           }
@@ -1095,13 +1093,14 @@ export class FilteringSpanProcessor implements SpanProcessor {
       const parentSpanId = (span as any).parentSpanContext.spanId
       let collapsedSpan = this._collapseSpans.get(parentSpanId)
       if (collapsedSpan) {
+        let next: (Span & ReadableSpan) | undefined
         while (
-          collapsedSpan.parentSpanContext?.spanId &&
-          this._collapseSpans.has(collapsedSpan.parentSpanContext?.spanId)
-        ) {
-          collapsedSpan = this._collapseSpans.get(
+          collapsedSpan?.parentSpanContext?.spanId &&
+          (next = this._collapseSpans.get(
             collapsedSpan.parentSpanContext.spanId,
-          )!
+          ))
+        ) {
+          collapsedSpan = next
         }
         debug(
           'collapsing span=%s from parent=%s to grandparent=%s',
@@ -1178,16 +1177,17 @@ export class FilteringSpanProcessor implements SpanProcessor {
       // Buffer the span
       tailEntry.spans.push(span)
 
+      const tail = this._sampling?.tail
       // mustKeepSpan: sets flag but does NOT flush
       if (
-        this._sampling!.tail!.mustKeepSpan &&
-        this._sampling!.tail!.mustKeepSpan(span)
+        tail?.mustKeepSpan &&
+        tail.mustKeepSpan(span, this._spanDurationMs(span))
       ) {
         tailEntry.mustKeep = true
       }
 
       // Max spans overflow: flush with rate=1 (trace is "interesting")
-      const maxSpans = this._sampling!.tail!.maxSpansPerTrace ?? 500
+      const maxSpans = tail?.maxSpansPerTrace ?? 500
       if (tailEntry.spans.length >= maxSpans) {
         tailEntry.decidedRate = 1
         tailEntry.flushed = true
@@ -1195,11 +1195,11 @@ export class FilteringSpanProcessor implements SpanProcessor {
         return
       }
 
-      if (isRoot) {
+      if (isRoot && tail) {
         // Root ended — evaluate tail.sample
         tailEntry.rootSpan = span
         const durationMs = this._spanDurationMs(span)
-        const tailRate = this._sampling!.tail!.sample(span.attributes, {
+        const tailRate = tail.sample(span.attributes, {
           spans: tailEntry.spans,
           errorCount: tailEntry.errorCount,
           hasError: tailEntry.hasError,
@@ -1220,8 +1220,8 @@ export class FilteringSpanProcessor implements SpanProcessor {
     }
 
     // HEAD-ONLY MODE
-    if (this._headDecisions.has(traceId)) {
-      const headRate = this._headDecisions.get(traceId)!
+    const headRate = this._headDecisions.get(traceId)
+    if (headRate != null) {
       const finalRate = headRate * burstRate
 
       // Root of a rescued trace — always export regardless of sample decision
@@ -1242,8 +1242,8 @@ export class FilteringSpanProcessor implements SpanProcessor {
       // Trace is sampled out — check mustKeepSpan for rescue
       if (finalRate > 1 && !shouldKeep(traceId, finalRate)) {
         if (
-          this._sampling!.head?.mustKeepSpan &&
-          this._sampling!.head.mustKeepSpan(span)
+          this._sampling?.head?.mustKeepSpan &&
+          this._sampling.head.mustKeepSpan(span, this._spanDurationMs(span))
         ) {
           // RESCUE: keep this span + guarantee root export
           this._rescuedTraces.add(traceId)
@@ -1308,15 +1308,15 @@ export class FilteringSpanProcessor implements SpanProcessor {
     const bp = this._sampling.burstProtection
     const key = bp.keyFn ? bp.keyFn(span) : span.name
     const nowMs = Date.now()
-    const emaRate = this._updateEma(key, nowMs)
+    const emaRate = this._updateEma(key, nowMs, bp.halfLifeMs ?? 10_000)
     const threshold = bp.rateThreshold ?? 100
     if (emaRate <= threshold) return 1
     const rate = Math.ceil(emaRate / threshold)
     return Math.min(rate, bp.maxSampleRate ?? 100)
   }
 
-  private _updateEma(key: string, nowMs: number): number {
-    let state = this._burstEma.get(key)
+  private _updateEma(key: string, nowMs: number, halfLifeMs: number): number {
+    const state = this._burstEma.get(key)
     if (!state) {
       this._burstEma.set(key, { rate: 0, lastEventMs: nowMs })
       return 0
@@ -1326,7 +1326,6 @@ export class FilteringSpanProcessor implements SpanProcessor {
       state.rate += 1
       return state.rate
     }
-    const halfLifeMs = this._sampling!.burstProtection!.halfLifeMs ?? 10_000
     const alpha = 1 - Math.exp(-dtMs / halfLifeMs)
     const instantRate = 1000 / dtMs
     state.rate = alpha * instantRate + (1 - alpha) * state.rate

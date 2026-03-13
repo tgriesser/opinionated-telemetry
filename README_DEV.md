@@ -621,7 +621,8 @@ opinionatedTelemetryInit({
         if (spanName.startsWith('health-check')) return 100 // keep 1-in-100
         return 1 // keep all
       },
-      mustKeepSpan: (span) => span.status.code === SpanStatusCode.ERROR,
+      mustKeepSpan: (span, durationMs) =>
+        span.status.code === SpanStatusCode.ERROR,
     },
 
     // Tail-based: buffer all spans, decide with full trace context
@@ -631,7 +632,8 @@ opinionatedTelemetryInit({
         if (trace.durationMs > 5000) return 1 // keep slow traces
         return 10 // sample 1-in-10 otherwise
       },
-      mustKeepSpan: (span) => span.status.code === SpanStatusCode.ERROR,
+      mustKeepSpan: (span, durationMs) =>
+        span.status.code === SpanStatusCode.ERROR,
       maxTraces: 1000, // max buffered traces (default: 1000)
       maxAgeMs: 120_000, // max buffer age (default: 120s)
       maxSpansPerTrace: 500, // flush large traces early (default: 500)

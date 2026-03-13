@@ -35,7 +35,7 @@ export function createAutoInstrumentHookCJS(
   ;(Module as any)._load = function otelInstrumentedLoad(
     request: string,
     parent: any,
-    isMain: boolean,
+    _isMain: boolean,
   ) {
     const result = originalLoad.apply(this, arguments)
 

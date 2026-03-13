@@ -1812,7 +1812,7 @@ describe('FilteringSpanProcessor', () => {
 
       // Should be 1 aggregate span, not 5
       expect(s3Spans).toHaveLength(1)
-      const agg = s3Spans[0]!
+      const agg = s3Spans[0]
       expect(agg.attributes['opin_tel.meta.is_aggregate']).toBe(true)
       expect(agg.attributes['opin_tel.agg.count']).toBe(5)
       expect(agg.attributes['opin_tel.agg.error_count']).toBe(0)
@@ -1890,8 +1890,8 @@ describe('FilteringSpanProcessor', () => {
 
       // Single span — no aggregate, just the original
       expect(cacheSpans).toHaveLength(1)
-      expect(cacheSpans[0]!.attributes['opin_tel.agg.count']).toBeUndefined()
-      expect(cacheSpans[0]!.attributes['cache.key']).toBe('user:1')
+      expect(cacheSpans[0].attributes['opin_tel.agg.count']).toBeUndefined()
+      expect(cacheSpans[0].attributes['cache.key']).toBe('user:1')
     })
 
     it('does not emit aggregate when all spans are errors', async () => {
@@ -1956,7 +1956,7 @@ describe('FilteringSpanProcessor', () => {
       const dlSpans = spans.filter((s) => s.name === 'dataloader.load')
 
       expect(dlSpans).toHaveLength(1)
-      expect(dlSpans[0]!.attributes['opin_tel.agg.count']).toBe(3)
+      expect(dlSpans[0].attributes['opin_tel.agg.count']).toBe(3)
     })
 
     it('root spans never aggregate even if predicate matches', async () => {
@@ -2325,9 +2325,9 @@ describe('FilteringSpanProcessor', () => {
 
       // Both consumed into aggregate, no individual error span
       expect(rpcSpans).toHaveLength(1)
-      expect(rpcSpans[0]!.attributes['opin_tel.meta.is_aggregate']).toBe(true)
-      expect(rpcSpans[0]!.attributes['opin_tel.agg.count']).toBe(2)
-      expect(rpcSpans[0]!.attributes['opin_tel.agg.error_count']).toBe(1)
+      expect(rpcSpans[0].attributes['opin_tel.meta.is_aggregate']).toBe(true)
+      expect(rpcSpans[0].attributes['opin_tel.agg.count']).toBe(2)
+      expect(rpcSpans[0].attributes['opin_tel.agg.error_count']).toBe(1)
     })
 
     it('median with even number of values takes average of two middle', async () => {

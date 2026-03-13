@@ -4,9 +4,12 @@ import { SpanStatusCode } from '@opentelemetry/api'
 import type {
   PushMetricExporter,
   ResourceMetrics,
-  MetricData,
   DataPoint,
 } from '@opentelemetry/sdk-metrics'
+
+type SpanWithParent = ReadableSpan & {
+  parentSpanContext: Exclude<ReadableSpan['parentSpanContext'], undefined>
+}
 
 // ─── Span Exporter ────────────────────────────────────────────────
 
@@ -156,14 +159,14 @@ export class TestSpanExporter implements SpanExporter {
    */
   assertNoOrphanSpans(): void {
     const spanIds = new Set(this._spans.map((s) => s.spanContext().spanId))
-    const orphans = this._spans.filter(
-      (s) => s.parentSpanContext && !spanIds.has(s.parentSpanContext.spanId),
+    const orphans = this._spans.filter((s): s is SpanWithParent =>
+      Boolean(s.parentSpanContext && !spanIds.has(s.parentSpanContext.spanId)),
     )
     if (orphans.length > 0) {
       const details = orphans
         .map(
           (s) =>
-            `"${s.name}" (parent=${s.parentSpanContext!.spanId.slice(0, 8)}…)`,
+            `"${s.name}" (parent=${s.parentSpanContext.spanId.slice(0, 8)}…)`,
         )
         .join(', ')
       throw new Error(`Found ${orphans.length} orphan span(s): [${details}]`)
@@ -366,7 +369,7 @@ export class TestMetricExporter implements PushMetricExporter {
       for (const sm of rm.scopeMetrics) {
         for (const m of sm.metrics) {
           const existing = result.get(m.descriptor.name)
-          const points = (m as MetricData).dataPoints as DataPoint<unknown>[]
+          const points = m.dataPoints as DataPoint<unknown>[]
           if (existing) {
             existing.push(...points)
           } else {

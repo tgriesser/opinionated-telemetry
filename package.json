@@ -11,21 +11,6 @@
       "require": "./dist/cjs/index.js",
       "types": "./dist/esm/index.d.ts"
     },
-    "./opentelemetry-api": {
-      "import": "./dist/esm/opentelemetry-api.js",
-      "require": "./dist/cjs/opentelemetry-api.js",
-      "types": "./dist/esm/opentelemetry-api.d.ts"
-    },
-    "./opentelemetry-core": {
-      "import": "./dist/esm/opentelemetry-core.js",
-      "require": "./dist/cjs/opentelemetry-core.js",
-      "types": "./dist/esm/opentelemetry-core.d.ts"
-    },
-    "./opentelemetry-instrumentation": {
-      "import": "./dist/esm/opentelemetry-instrumentation.js",
-      "require": "./dist/cjs/opentelemetry-instrumentation.js",
-      "types": "./dist/esm/opentelemetry-instrumentation.d.ts"
-    },
     "./honeycomb": {
       "import": "./dist/esm/honeycomb.js",
       "require": "./dist/cjs/honeycomb.js",
@@ -92,6 +77,7 @@
     "clean": "rm -rf dist",
     "format": "prettier --write '**/*.{ts,md,json}'",
     "format:check": "prettier --check '**/*.{ts,md,json}'",
+    "lint": "eslint src/ test/",
     "lint:deps": "knip",
     "prepare": "husky",
     "test": "vitest run",
@@ -101,7 +87,11 @@
   },
   "lint-staged": {
     "package.json": "sort-package-json",
-    "*.{ts,md,json}": "prettier --write"
+    "*.ts": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{md,json}": "prettier --write"
   },
   "dependencies": {
     "@opentelemetry/core": "^2.6.0",
@@ -126,6 +116,8 @@
     "@vitest/coverage-v8": "^4.0.18",
     "better-sqlite3": "^12.6.2",
     "concurrently": "^9.2.1",
+    "eslint": "^10.0.3",
+    "eslint-config-prettier": "^10.1.8",
     "express": "^5.2.1",
     "graphql": "^16.13.1",
     "husky": "^9.1.7",
@@ -138,6 +130,7 @@
     "sort-package-json": "^3.6.1",
     "supertest": "^7.2.2",
     "typescript": "^5.5.0",
+    "typescript-eslint": "^8.57.0",
     "vitest": "^4.0.18"
   },
   "peerDependencies": {

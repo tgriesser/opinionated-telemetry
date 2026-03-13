@@ -123,7 +123,7 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
 
   if (shutdownSignal) {
     debug('registering shutdown on %s', shutdownSignal)
-    process.on(shutdownSignal, shutdown)
+    process.on(shutdownSignal, () => void shutdown())
   }
 
   return {

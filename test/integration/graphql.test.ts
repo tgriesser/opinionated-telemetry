@@ -17,7 +17,7 @@ describe('otelInitGraphql (real GraphQL)', () => {
   it('wraps custom resolvers and propagates graphql attrs as baggage', async () => {
     const { tracer } = createSimpleProvider()
 
-    let baggageSeen: Record<string, string | undefined> = {}
+    const baggageSeen: Record<string, string | undefined> = {}
 
     const schema = new GraphQLSchema({
       query: new GraphQLObjectType({

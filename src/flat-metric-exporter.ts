@@ -107,7 +107,7 @@ export class FlatMetricExporter implements PushMetricExporter {
               dp.attributes,
             )
             transformedMetrics.push(
-              makeGauge(flatName, dp.value as number, dp.startTime, dp.endTime),
+              makeGauge(flatName, dp.value, dp.startTime, dp.endTime),
             )
           }
         }

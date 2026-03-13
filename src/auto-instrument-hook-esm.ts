@@ -40,6 +40,7 @@ export function createAutoInstrumentHookESM(
     debug('  matching: %s', m.prefix)
   }
 
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore - not defined during CJS build
   const _require = createRequire(import.meta.url)
   const { Hook } = _require('import-in-the-middle')

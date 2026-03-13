@@ -30,7 +30,7 @@ Head-based sampling makes a keep/drop decision once per trace, at root span crea
 
 Sometimes a span within a sampled-out trace is too important to drop (e.g. an error, a slow query). The `mustKeepSpan` callback enables rescuing individual spans:
 
-- When `mustKeepSpan(span)` returns `true` on a span in a sampled-out trace, that span is **rescued**.
+- When `mustKeepSpan(span, durationMs)` returns `true` on a span in a sampled-out trace, that span is **rescued**.
 - The rescued span is reparented directly to the root span (skipping any intermediate dropped spans).
 - Both the rescued span and the root span receive `SampleRate=1` and `opin_tel.meta.incomplete_trace=true`.
 - Other spans in the trace that are sampled out continue to be dropped.
@@ -77,7 +77,7 @@ The returned rate determines whether the entire trace is kept or dropped.
 
 Unlike head sampling, tail's `mustKeepSpan` does **not** immediately rescue the span. Instead:
 
-1. When `mustKeepSpan(span)` returns `true`, the trace is flagged as `mustKeep`.
+1. When `mustKeepSpan(span, durationMs)` returns `true`, the trace is flagged as `mustKeep`.
 2. Buffering continues until the root span ends (so `tail.sample` has full context).
 3. When the root ends, the `mustKeep` flag clamps the final rate to 1 -- the trace is always kept regardless of what `tail.sample` returns.
 

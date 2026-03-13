@@ -16,6 +16,7 @@ export function withBaggage<T>(
   let updated = currentBaggage
   for (const [key, value] of Object.entries(entries)) {
     if (value != null) {
+      // eslint-disable-next-line @typescript-eslint/no-base-to-string
       updated = updated.setEntry(key, { value: String(value) })
     }
   }

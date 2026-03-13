@@ -113,7 +113,7 @@ export function wrapFunction(
         }
       })
     },
-  }[fn.name || 'anonymous']!
+  }[fn.name || 'anonymous']
 
   // Preserve function.length (arity)
   Object.defineProperty(wrapper, 'length', {
