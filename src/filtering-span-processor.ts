@@ -16,6 +16,7 @@ import { crc32 } from 'node:zlib'
 import debugLib from 'debug'
 import type {
   AggregateConfig,
+  AggregateGroupStats,
   AggregateNumericOption,
   GlobalHooks,
   OnStartResult,
@@ -66,6 +67,9 @@ interface AggregateGroup {
   bufferedFirstNonError: ReadableSpan | null
   createdAt: number
   attrTrackers: Map<string, AttributeTracker> | null
+  emitMode: 'onInflightZero' | 'onParentEnd'
+  chunkFn: ((span: ReadableSpan, stats: AggregateGroupStats) => boolean) | null
+  chunkIndex: number
 }
 
 type MemoryKey = keyof NodeJS.MemoryUsage
@@ -209,6 +213,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
   private _samplingEvictionInterval: ReturnType<typeof setInterval> | null =
     null
   private _aggregateGroups = new Map<string, AggregateGroup>()
+  private _parentEndAggregateKeys = new Map<string, Set<string>>()
   private _instrumentationHooks: Record<string, OpinionatedOptions>
   private _globalHooks: GlobalHooks | null = null
   private _droppedSyncSpans = new Map<
@@ -422,6 +427,16 @@ export class FilteringSpanProcessor implements SpanProcessor {
               })
             }
           }
+          const emitMode = aggConfig.emit ?? 'onInflightZero'
+          let chunkFn:
+            | ((span: ReadableSpan, stats: AggregateGroupStats) => boolean)
+            | null = null
+          if (typeof aggConfig.chunk === 'number') {
+            const chunkSize = aggConfig.chunk
+            chunkFn = (_s, stats) => stats.count >= chunkSize
+          } else if (typeof aggConfig.chunk === 'function') {
+            chunkFn = aggConfig.chunk
+          }
           this._aggregateGroups.set(key, {
             firstSpan: span,
             config: aggConfig,
@@ -437,7 +452,19 @@ export class FilteringSpanProcessor implements SpanProcessor {
             bufferedFirstNonError: null,
             createdAt: Date.now(),
             attrTrackers,
+            emitMode,
+            chunkFn,
+            chunkIndex: 0,
           })
+          if (emitMode === 'onParentEnd') {
+            const parentSpanId = span.parentSpanContext.spanId
+            let keys = this._parentEndAggregateKeys.get(parentSpanId)
+            if (!keys) {
+              keys = new Set()
+              this._parentEndAggregateKeys.set(parentSpanId, keys)
+            }
+            keys.add(key)
+          }
         }
         aggregateKeyMap.set(span, key)
       }
@@ -493,6 +520,18 @@ export class FilteringSpanProcessor implements SpanProcessor {
       if (shouldDropSpan) {
         this._collapseSpans.delete(spanId)
         debug('dropping collapsed span: %s', span.name)
+        // Flush any onParentEnd aggregate groups parented to this collapsed span
+        const parentEndKeys = this._parentEndAggregateKeys.get(spanId)
+        if (parentEndKeys) {
+          for (const key of parentEndKeys) {
+            const group = this._aggregateGroups.get(key)
+            if (group) {
+              this._emitAggregateSpan(key, group)
+              this._aggregateGroups.delete(key)
+            }
+          }
+          this._parentEndAggregateKeys.delete(spanId)
+        }
         // Step 4a: If collapsed span also had conditional drop, flush its buffer
         if (this._conditionalDropFns.has(spanId)) {
           this._conditionalDropFns.delete(spanId)
@@ -556,6 +595,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       this._emitAggregateSpan(key, group)
     }
     this._aggregateGroups.clear()
+    this._parentEndAggregateKeys.clear()
 
     // Flush remaining tail buffer entries
     for (const [traceId, entry] of this._tailBuffer) {
@@ -680,6 +720,20 @@ export class FilteringSpanProcessor implements SpanProcessor {
    * Used for both normal span endings and flushing conditional buffers.
    */
   private _finishSpan(span: ReadableSpan): void {
+    // Flush any onParentEnd aggregate groups whose parent is this span
+    const spanId = span.spanContext().spanId
+    const parentEndKeys = this._parentEndAggregateKeys.get(spanId)
+    if (parentEndKeys) {
+      for (const key of parentEndKeys) {
+        const group = this._aggregateGroups.get(key)
+        if (group) {
+          this._emitAggregateSpan(key, group)
+          this._aggregateGroups.delete(key)
+        }
+      }
+      this._parentEndAggregateKeys.delete(spanId)
+    }
+
     // Check if this span itself has a conditional drop fn (e.g. nested buffered child)
     if (this._processConditionalDrop(span)) return
 
@@ -810,9 +864,30 @@ export class FilteringSpanProcessor implements SpanProcessor {
       }
     }
 
+    // Check chunk condition
+    if (group.chunkFn) {
+      const stats: AggregateGroupStats = {
+        count: group.count,
+        errorCount: group.errorCount,
+        nonErrorCount: group.nonErrorCount,
+        totalDurationMs: group.totalDurationMs,
+        minDurationMs: group.minDurationMs,
+        maxDurationMs: group.maxDurationMs,
+      }
+      if (group.chunkFn(span, stats)) {
+        this._emitAggregateSpan(key, group)
+        this._resetAggregateGroup(group)
+        group.chunkIndex++
+      }
+    }
+
+    // Emission logic
     if (group.inflight === 0) {
-      this._emitAggregateSpan(key, group)
-      this._aggregateGroups.delete(key)
+      if (group.emitMode === 'onInflightZero') {
+        this._emitAggregateSpan(key, group)
+        this._aggregateGroups.delete(key)
+      }
+      // onParentEnd: don't emit yet, wait for parent to end
     }
 
     // Error spans with keepErrors fall through to normal export
@@ -856,6 +931,11 @@ export class FilteringSpanProcessor implements SpanProcessor {
       [OPIN_TEL_INTERNAL.meta.isAggregate]: true,
       [OPIN_TEL_INTERNAL.agg.count]: group.count,
       [OPIN_TEL_INTERNAL.agg.errorCount]: group.errorCount,
+    }
+
+    // Add chunk index when chunking is active
+    if (group.chunkIndex > 0 || group.chunkFn) {
+      attributes[OPIN_TEL_INTERNAL.agg.chunkIndex] = group.chunkIndex
     }
 
     if (group.nonErrorCount > 0) {
@@ -949,6 +1029,23 @@ export class FilteringSpanProcessor implements SpanProcessor {
     })
 
     aggregateSpan.end(group.latestEnd)
+  }
+
+  private _resetAggregateGroup(group: AggregateGroup): void {
+    group.count = 0
+    group.errorCount = 0
+    group.nonErrorCount = 0
+    group.totalDurationMs = 0
+    group.minDurationMs = Infinity
+    group.maxDurationMs = 0
+    group.bufferedFirstNonError = null
+    group.earliestStart = [Number.MAX_SAFE_INTEGER, 0]
+    group.latestEnd = [0, 0]
+    if (group.attrTrackers) {
+      for (const tracker of group.attrTrackers.values()) {
+        tracker.values = []
+      }
+    }
   }
 
   private _reapStuckSpans(): void {
@@ -1450,6 +1547,16 @@ export class FilteringSpanProcessor implements SpanProcessor {
       if (nowMs - group.createdAt > 60_000) {
         this._emitAggregateSpan(key, group)
         this._aggregateGroups.delete(key)
+        // Clean up parentEnd tracking for evicted groups
+        if (group.emitMode === 'onParentEnd') {
+          const parentSpanId = key.split(':')[0]
+          const keys = this._parentEndAggregateKeys.get(parentSpanId)
+          if (keys) {
+            keys.delete(key)
+            if (keys.size === 0)
+              this._parentEndAggregateKeys.delete(parentSpanId)
+          }
+        }
       }
     }
 

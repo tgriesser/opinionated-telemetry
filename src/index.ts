@@ -28,6 +28,7 @@ export type {
   AggregateConfig,
   AggregateAttributeConfig,
   AggregateGenericOption,
+  AggregateGroupStats,
   AggregateNumericOption,
   IgnoreRule,
   IgnoreRuleEntry,

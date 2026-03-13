@@ -62,5 +62,6 @@ export const OPIN_TEL_INTERNAL = {
     maxDurationMs: `${prefix}agg.max_duration_ms`,
     avgDurationMs: `${prefix}agg.avg_duration_ms`,
     totalDurationMs: `${prefix}agg.total_duration_ms`,
+    chunkIndex: `${prefix}agg.chunk_index`,
   },
 } as const

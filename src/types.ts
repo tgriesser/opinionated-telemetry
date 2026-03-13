@@ -152,11 +152,24 @@ export interface AggregateAttributeConfig {
   options: AggregateNumericOption | AggregateNumericOption[]
 }
 
+export interface AggregateGroupStats {
+  count: number
+  errorCount: number
+  nonErrorCount: number
+  totalDurationMs: number
+  minDurationMs: number
+  maxDurationMs: number
+}
+
 export interface AggregateConfig {
   /** Export error spans individually. Default: true */
   keepErrors?: boolean
   /** Custom attribute stats to compute on the aggregate span */
   attributes?: Record<string, AggregateAttributeConfig>
+  /** When to emit the aggregate. Default: 'onInflightZero' */
+  emit?: 'onInflightZero' | 'onParentEnd'
+  /** Emit intermediate chunks. Number = fixed count, function = emit when returns true. */
+  chunk?: number | ((span: ReadableSpan, stats: AggregateGroupStats) => boolean)
 }
 
 /**

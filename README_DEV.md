@@ -202,11 +202,33 @@ The `FilteredBaggagePropagator` class is also exported for standalone use if you
 
 When a parent span fires off many parallel child spans with the same name (dataloader batches, S3 multi-get, parallel DB queries), the result is N nearly-identical sibling spans that add volume without proportional signal. Span aggregation collapses them into a single aggregate span with summary statistics.
 
-**How it works:** Spans are grouped by `${parentSpanId}:${spanName}`. The group tracks in-flight count; when it drops to zero, the batch is complete and an aggregate span is emitted. If the same parent later starts another batch with the same name, it's a new group.
+**How it works:** Spans are grouped by `${parentSpanId}:${spanName}`. By default (`emit: 'onInflightZero'`), the group tracks in-flight count; when it drops to zero, the batch is complete and an aggregate span is emitted. If the same parent later starts another batch with the same name, it's a new group.
 
 **Error handling:** By default, error spans are exported individually (full attributes, events, stack trace preserved) and counted in `opin_tel.agg.error_count`. Set `keepErrors: false` to consume error spans into the aggregate instead.
 
 **Single-span optimization:** If only one non-error span arrives in a group (and no errors), it's exported as-is — no aggregate wrapper.
+
+#### Emission modes
+
+| Mode                         | Behavior                                             | Best for                                      |
+| ---------------------------- | ---------------------------------------------------- | --------------------------------------------- |
+| `'onInflightZero'` (default) | Emits when all started spans in the group have ended | Parallel patterns (`Promise.all`)             |
+| `'onParentEnd'`              | Defers emission until the parent span ends           | Sequential loops (`for`/`while` with `await`) |
+
+With the default `onInflightZero`, sequential spans each start and end before the next — inflight goes 1→0 every iteration, producing N separate aggregates of count=1. Use `emit: 'onParentEnd'` to keep the group open and aggregate all sequential children into one span.
+
+#### Chunking
+
+The `chunk` option emits intermediate aggregate spans at regular intervals, useful for long-running loops where you want periodic visibility without waiting for the parent to end.
+
+- **Number** — emit every N spans: `chunk: 100`
+- **Predicate** — emit when the function returns true: `chunk: (span, stats) => stats.totalDurationMs > 5000`
+
+The predicate receives the current span and an `AggregateGroupStats` object (`count`, `errorCount`, `nonErrorCount`, `totalDurationMs`, `minDurationMs`, `maxDurationMs`).
+
+Each chunk gets an `opin_tel.agg.chunk_index` attribute (0-based). After a chunk emits, the group stats reset for the next chunk. Any remaining spans are emitted when the group closes (parent end or inflight zero).
+
+Chunking works with both emission modes.
 
 #### Root-level predicate
 
@@ -228,6 +250,9 @@ opinionatedTelemetryInit({
           },
         },
       }
+    // Sequential loop — aggregate all iterations under the parent
+    if (span.name === 'process.record')
+      return { emit: 'onParentEnd', chunk: 100 }
     return false
   },
 })
@@ -259,14 +284,15 @@ instrumentationHooks: {
 
 Every aggregate span has `opin_tel.meta.is_aggregate = true` and the following built-in stats:
 
-| Attribute                        | Description                                 |
-| -------------------------------- | ------------------------------------------- |
-| `opin_tel.agg.count`             | Total spans in the group (including errors) |
-| `opin_tel.agg.error_count`       | Number of spans with ERROR status           |
-| `opin_tel.agg.min_duration_ms`   | Shortest non-error span duration            |
-| `opin_tel.agg.max_duration_ms`   | Longest non-error span duration             |
-| `opin_tel.agg.avg_duration_ms`   | Mean non-error span duration                |
-| `opin_tel.agg.total_duration_ms` | Sum of non-error span durations             |
+| Attribute                        | Description                                                   |
+| -------------------------------- | ------------------------------------------------------------- |
+| `opin_tel.agg.count`             | Total spans in the group (including errors)                   |
+| `opin_tel.agg.error_count`       | Number of spans with ERROR status                             |
+| `opin_tel.agg.min_duration_ms`   | Shortest non-error span duration                              |
+| `opin_tel.agg.max_duration_ms`   | Longest non-error span duration                               |
+| `opin_tel.agg.avg_duration_ms`   | Mean non-error span duration                                  |
+| `opin_tel.agg.total_duration_ms` | Sum of non-error span durations                               |
+| `opin_tel.agg.chunk_index`       | 0-based chunk index (present only when `chunk` is configured) |
 
 #### Custom attribute stat options
 

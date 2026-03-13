@@ -2369,6 +2369,256 @@ describe('FilteringSpanProcessor', () => {
       // median of [10, 20, 30, 40] = (20 + 30) / 2 = 25
       expect(agg!.attributes['opin_tel.agg.val.median']).toBe(25)
     })
+
+    it('emit: onParentEnd aggregates sequential spans into one aggregate', async () => {
+      const { tracer, shutdown, exporter } = createTestProvider({
+        dropSyncSpans: false,
+        aggregateSpan: (span) => {
+          if (span.name !== 'db.query') return false
+          return { emit: 'onParentEnd' }
+        },
+      })
+
+      const root = tracer.startSpan('handler')
+      const ctx = trace.setSpan(context.active(), root)
+
+      // Sequential pattern: each span starts and ends before the next
+      for (let i = 0; i < 5; i++) {
+        const child = tracer.startSpan('db.query', {}, ctx)
+        child.end()
+      }
+      root.end()
+
+      await shutdown()
+
+      const dbSpans = exporter.spans.filter((s) => s.name === 'db.query')
+      // All 5 sequential spans should be in 1 aggregate, not 5 separate ones
+      expect(dbSpans).toHaveLength(1)
+      expect(dbSpans[0].attributes['opin_tel.agg.count']).toBe(5)
+      expect(dbSpans[0].attributes['opin_tel.meta.is_aggregate']).toBe(true)
+    })
+
+    it('emit: onParentEnd with chunk number emits intermediate chunks', async () => {
+      const { tracer, shutdown, exporter } = createTestProvider({
+        dropSyncSpans: false,
+        aggregateSpan: (span) => {
+          if (span.name !== 'batch.item') return false
+          return { emit: 'onParentEnd', chunk: 3 }
+        },
+      })
+
+      const root = tracer.startSpan('handler')
+      const ctx = trace.setSpan(context.active(), root)
+
+      // 10 sequential children, chunk every 3
+      for (let i = 0; i < 10; i++) {
+        const child = tracer.startSpan('batch.item', {}, ctx)
+        child.end()
+      }
+      root.end()
+
+      await shutdown()
+
+      const batchSpans = exporter.spans.filter((s) => s.name === 'batch.item')
+      // 3 chunks of 3 + 1 remainder of 1 (single-span optimization) = 4 spans
+      expect(batchSpans).toHaveLength(4)
+
+      const aggSpans = batchSpans.filter(
+        (s) => s.attributes['opin_tel.meta.is_aggregate'],
+      )
+      expect(aggSpans).toHaveLength(3)
+      aggSpans.forEach((s) => {
+        expect(s.attributes['opin_tel.agg.count']).toBe(3)
+      })
+
+      // Remainder is a single span exported as-is (single-span optimization)
+      const remainder = batchSpans.find(
+        (s) => !s.attributes['opin_tel.meta.is_aggregate'],
+      )
+      expect(remainder).toBeDefined()
+      expect(remainder!.attributes['opin_tel.agg.count']).toBeUndefined()
+
+      // Verify chunk indices on aggregate spans
+      const chunkIndices = aggSpans.map(
+        (s) => s.attributes['opin_tel.agg.chunk_index'] as number,
+      )
+      expect(chunkIndices).toContain(0)
+      expect(chunkIndices).toContain(1)
+      expect(chunkIndices).toContain(2)
+    })
+
+    it('emit: onParentEnd with chunk predicate emits when predicate returns true', async () => {
+      const { tracer, shutdown, exporter } = createTestProvider({
+        dropSyncSpans: false,
+        aggregateSpan: (span) => {
+          if (span.name !== 'work') return false
+          return {
+            emit: 'onParentEnd',
+            chunk: (_span, stats) => stats.count >= 2,
+          }
+        },
+      })
+
+      const root = tracer.startSpan('handler')
+      const ctx = trace.setSpan(context.active(), root)
+
+      for (let i = 0; i < 5; i++) {
+        const child = tracer.startSpan('work', {}, ctx)
+        child.end()
+      }
+      root.end()
+
+      await shutdown()
+
+      const workSpans = exporter.spans.filter((s) => s.name === 'work')
+      // 2 chunks of 2 + 1 remainder of 1 (single-span optimization) = 3
+      expect(workSpans).toHaveLength(3)
+      const aggSpans = workSpans.filter(
+        (s) => s.attributes['opin_tel.meta.is_aggregate'],
+      )
+      expect(aggSpans).toHaveLength(2)
+      aggSpans.forEach((s) => {
+        expect(s.attributes['opin_tel.agg.count']).toBe(2)
+      })
+      // Remainder exported as original
+      const remainder = workSpans.find(
+        (s) => !s.attributes['opin_tel.meta.is_aggregate'],
+      )
+      expect(remainder).toBeDefined()
+    })
+
+    it('chunk with onInflightZero emits chunks for parallel spans', async () => {
+      const { tracer, shutdown, exporter } = createTestProvider({
+        dropSyncSpans: false,
+        aggregateSpan: (span) => {
+          if (span.name !== 'fetch') return false
+          return { chunk: 2 }
+        },
+      })
+
+      const root = tracer.startSpan('handler')
+      const ctx = trace.setSpan(context.active(), root)
+
+      // Start 5 parallel spans
+      const children = Array.from({ length: 5 }, () =>
+        tracer.startSpan('fetch', {}, ctx),
+      )
+      children.forEach((c) => c.end())
+      root.end()
+
+      await shutdown()
+
+      const fetchSpans = exporter.spans.filter((s) => s.name === 'fetch')
+      // 2 chunks of 2 + 1 remainder of 1 (single-span optimization) = 3 spans
+      expect(fetchSpans).toHaveLength(3)
+
+      const aggSpans = fetchSpans.filter(
+        (s) => s.attributes['opin_tel.meta.is_aggregate'],
+      )
+      expect(aggSpans).toHaveLength(2)
+      aggSpans.forEach((s) => {
+        expect(s.attributes['opin_tel.agg.count']).toBe(2)
+      })
+      // Remainder exported as original
+      const remainder = fetchSpans.find(
+        (s) => !s.attributes['opin_tel.meta.is_aggregate'],
+      )
+      expect(remainder).toBeDefined()
+    })
+
+    it('emit: onParentEnd with keepErrors exports errors individually', async () => {
+      const { tracer, shutdown, exporter } = createTestProvider({
+        dropSyncSpans: false,
+        aggregateSpan: (span) => {
+          if (span.name !== 'task') return false
+          return { emit: 'onParentEnd', keepErrors: true }
+        },
+      })
+
+      const root = tracer.startSpan('handler')
+      const ctx = trace.setSpan(context.active(), root)
+
+      const ok1 = tracer.startSpan('task', {}, ctx)
+      ok1.end()
+      const err = tracer.startSpan('task', {}, ctx)
+      err.setStatus({ code: SpanStatusCode.ERROR, message: 'fail' })
+      err.end()
+      const ok2 = tracer.startSpan('task', {}, ctx)
+      ok2.end()
+      root.end()
+
+      await shutdown()
+
+      const taskSpans = exporter.spans.filter((s) => s.name === 'task')
+      // 1 aggregate (2 non-errors) + 1 individual error = 2
+      expect(taskSpans).toHaveLength(2)
+
+      const errorSpan = taskSpans.find(
+        (s) => s.status.code === SpanStatusCode.ERROR,
+      )
+      expect(errorSpan).toBeDefined()
+
+      const agg = taskSpans.find(
+        (s) => s.attributes['opin_tel.meta.is_aggregate'],
+      )
+      expect(agg).toBeDefined()
+      expect(agg!.attributes['opin_tel.agg.count']).toBe(3)
+      expect(agg!.attributes['opin_tel.agg.error_count']).toBe(1)
+    })
+
+    it('emit: onParentEnd single-span optimization exports original directly', async () => {
+      const { tracer, shutdown, exporter } = createTestProvider({
+        dropSyncSpans: false,
+        aggregateSpan: (span) => {
+          if (span.name !== 'single') return false
+          return { emit: 'onParentEnd' }
+        },
+      })
+
+      const root = tracer.startSpan('handler')
+      const ctx = trace.setSpan(context.active(), root)
+
+      const child = tracer.startSpan('single', {}, ctx)
+      child.setAttribute('custom.key', 'value')
+      child.end()
+      root.end()
+
+      await shutdown()
+
+      const singleSpans = exporter.spans.filter((s) => s.name === 'single')
+      expect(singleSpans).toHaveLength(1)
+      // Should be the original span, not an aggregate
+      expect(singleSpans[0].attributes['opin_tel.agg.count']).toBeUndefined()
+      expect(singleSpans[0].attributes['custom.key']).toBe('value')
+    })
+
+    it('existing onInflightZero behavior is preserved (backwards compat)', async () => {
+      const { tracer, shutdown, exporter } = createTestProvider({
+        dropSyncSpans: false,
+        aggregateSpan: (span) => span.name === 'S3.GetObject',
+      })
+
+      const root = tracer.startSpan('handler')
+      const ctx = trace.setSpan(context.active(), root)
+
+      // Sequential pattern without onParentEnd should produce separate aggregates (count=1 each)
+      for (let i = 0; i < 3; i++) {
+        const child = tracer.startSpan('S3.GetObject', {}, ctx)
+        child.end()
+      }
+      root.end()
+
+      await shutdown()
+
+      const s3Spans = exporter.spans.filter((s) => s.name === 'S3.GetObject')
+      // Default onInflightZero: each sequential span creates its own group
+      // that emits immediately when inflight hits 0
+      expect(s3Spans).toHaveLength(3)
+      // Each is a single-span optimization (exported as-is)
+      s3Spans.forEach((s) => {
+        expect(s.attributes['opin_tel.agg.count']).toBeUndefined()
+      })
+    })
   })
 
   describe('conditional span dropping', () => {
