@@ -24,6 +24,7 @@ Best suited for & meant use with [Honeycomb.io](https://www.honeycomb.io/). Virt
 - **Burst Protection**: Along with the sampling, includes some conventions for preventing a simple coding mistake that generates an infinite loop spawning thousands of spans per second from doing too much damage.
 - **Span aggregation**: collapses N parallel sibling spans with the same name (dataloader batches, S3 multi-get, parallel DB queries) into a single aggregate span with summary statistics, while preserving individual error spans. Configurable via per-scope options or a root-level predicate, with optional custom attribute stats (min, max, avg, median, uniq, etc.)
 - **Flat metric exporter**: [opt-in exporter](#flat-metric-exporter) that wraps your metric exporter to fold dimensional attributes into metric names and expand histograms into summary stats + percentiles — so Honeycomb merges everything into a single wide event per collection cycle.
+- **Node runtime metrics**: [focused runtime health metrics](#node-runtime-metrics) (event loop delay, heap, GC, CPU, handles, memory) using built-in Node.js APIs — replaces noisy `@opentelemetry/host-metrics` and `instrumentation-runtime-node` with 18 actionable gauges and zero attributes.
 - **Integration helpers**: knex, graphql, bull, socket.io, express
 - **Event loop utilization**: captures event loop utilization (0-1) on all spans. Useful for alerting on situation where expensive spans are blocking the event loop. Particularly useful when dealing with things that are synchronous, like `fs` calls or `better-sqlite3` queries
 
@@ -586,7 +587,7 @@ The `opinionated-telemetry/honeycomb` entrypoint wires up OTLP trace and metric 
 import { honeycombInit } from 'opinionated-telemetry/honeycomb'
 import { HttpInstrumentation } from '@opentelemetry/instrumentation-http'
 
-const { sdk, getTracer, shutdown } = honeycombInit({
+const { sdk, getTracer, shutdown, runtimeMetrics } = honeycombInit({
   serviceName: 'my-service',
   apiKey: process.env.HONEYCOMB_API_KEY!,
   instrumentations: [new HttpInstrumentation()],
@@ -598,16 +599,18 @@ This sets up:
 
 - **Trace export** to `https://api.honeycomb.io/v1/traces` with dataset = `serviceName`
 - **Metric export** via `FlatMetricExporter` to `https://api.honeycomb.io/v1/metrics` with dataset = `${serviceName}_metrics`, collected every 60s
+- **Runtime metrics** — 18 focused Node.js health gauges (event loop delay, heap, GC, CPU, handles, memory) auto-started unless `runtimeMetrics: false`
 
 All other `opinionatedTelemetryInit` options are supported. `traceExporter` and `metricExporter` can be overridden if you need custom exporter configuration.
 
-| Option                   | Type                 | Default  | Description                                 |
-| ------------------------ | -------------------- | -------- | ------------------------------------------- |
-| `apiKey`                 | `string`             | required | Honeycomb API key                           |
-| `enableMetricCollection` | `boolean`            | `true`   | Set to `false` to disable metric collection |
-| `metricExportInterval`   | `number`             | `60_000` | Metric export interval in milliseconds      |
-| `traceExporter`          | `SpanExporter`       | —        | Override the default OTLP trace exporter    |
-| `metricExporter`         | `PushMetricExporter` | —        | Override the default OTLP metric exporter   |
+| Option                   | Type                                | Default  | Description                                              |
+| ------------------------ | ----------------------------------- | -------- | -------------------------------------------------------- |
+| `apiKey`                 | `string`                            | required | Honeycomb API key                                        |
+| `enableMetricCollection` | `boolean`                           | `true`   | Set to `false` to disable metric collection              |
+| `metricExportInterval`   | `number`                            | `60_000` | Metric export interval in milliseconds                   |
+| `traceExporter`          | `SpanExporter`                      | —        | Override the default OTLP trace exporter                 |
+| `metricExporter`         | `PushMetricExporter`                | —        | Override the default OTLP metric exporter                |
+| `runtimeMetrics`         | `NodeRuntimeMetricsConfig \| false` | `{}`     | Configure or disable runtime metrics (see section below) |
 
 The entrypoint also re-exports everything from the main `opinionated-telemetry` package, so you can use it as your sole import.
 
@@ -695,6 +698,64 @@ v8js.gc_major.duration.avg: 0.0105
 v8js.gc_major.duration.p99: 0.015
 ...
 ```
+
+## Node Runtime Metrics
+
+OTel's default runtime metrics packages (`@opentelemetry/host-metrics` + `@opentelemetry/instrumentation-runtime-node`) emit 24+ metrics with per-heap-space breakdowns, per-core CPU, per-NIC network stats, and all GC types. Most of this is noise.
+
+`NodeRuntimeMetrics` replaces them with 18 focused, actionable gauges using built-in Node.js APIs, exposed through the OTel Meter API so they flow through the existing `FlatMetricExporter` pipeline.
+
+When using the `honeycombInit` entrypoint, runtime metrics are auto-started by default. For standalone use:
+
+```ts
+import { NodeRuntimeMetrics } from 'opinionated-telemetry/metrics'
+
+const rtm = new NodeRuntimeMetrics({
+  // All options are optional
+  prefix: 'node', // metric name prefix (default: 'node')
+  eventLoopDelayResolution: 20, // histogram resolution in ms (default: 20)
+  enable: {
+    // selectively disable groups (all default true)
+    eventLoopDelay: true,
+    heap: true,
+    gc: true,
+    handlesRequests: true,
+    cpu: true,
+    memory: true,
+  },
+})
+
+rtm.start() // idempotent
+// ... later
+rtm.stop() // idempotent — disconnects observers, disables histogram
+```
+
+### Metrics
+
+| Group      | Metric                         | Source                                           |
+| ---------- | ------------------------------ | ------------------------------------------------ |
+| Event Loop | `node.eventloop.delay.p50`     | `monitorEventLoopDelay().percentile(50)` (ms)    |
+|            | `node.eventloop.delay.p99`     | `.percentile(99)` (ms)                           |
+|            | `node.eventloop.delay.max`     | `.max` (ms)                                      |
+| Heap       | `node.heap.used_mb`            | `process.memoryUsage().heapUsed`                 |
+|            | `node.heap.total_mb`           | `.heapTotal`                                     |
+|            | `node.heap.used_pct`           | `heapUsed / heapTotal * 100`                     |
+| GC         | `node.gc.major.count`          | `PerformanceObserver('gc')`, kind=2 (major) only |
+|            | `node.gc.major.avg_ms`         | average duration per interval                    |
+|            | `node.gc.major.max_ms`         | max duration per interval                        |
+|            | `node.gc.major.p99_ms`         | p99 duration per interval                        |
+| Handles    | `node.handles`                 | `process._getActiveHandles().length`             |
+|            | `node.requests`                | `process._getActiveRequests().length`            |
+| CPU        | `node.cpu.user_pct`            | `process.cpuUsage()` delta                       |
+|            | `node.cpu.system_pct`          | delta                                            |
+|            | `node.cpu.total_pct`           | user + system                                    |
+| Memory     | `node.memory.rss_mb`           | `process.memoryUsage().rss`                      |
+|            | `node.memory.external_mb`      | `.external`                                      |
+|            | `node.memory.array_buffers_mb` | `.arrayBuffers`                                  |
+
+All metrics are observable gauges with zero attributes, so they merge cleanly into a single wide event when using `FlatMetricExporter` with Honeycomb.
+
+Event loop and GC stats are reset after each observation, giving you per-interval measurements. CPU percentages are computed as deltas between observations.
 
 ## Sampling
 
