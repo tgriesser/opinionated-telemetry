@@ -203,7 +203,10 @@ export class FilteringSpanProcessor implements SpanProcessor {
   private _memoryDeltaKeys: MemoryKey[] = []
   private _eventLoopUtilization: boolean | 'root' = false
   private _stuckSpanInterval: ReturnType<typeof setInterval> | null = null
-  private _reportedStuckSpans = new Map<string, number>()
+  private _reportedStuckSpans = new Map<
+    string,
+    { count: number; lastReportedMs: number }
+  >()
   private _stuckSpanConfig: StuckSpanConfig | null = null
   private _sampling: SamplingConfig | null = null
   private _headDecisions = new Map<string, number>()
@@ -479,7 +482,8 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
     this._allSpans.delete(span as Span)
     this._activeSpanIds.delete(spanId)
-    const wasReportedStuck = this._reportedStuckSpans.has(spanId)
+    const stuckEntry = this._reportedStuckSpans.get(spanId)
+    const wasReportedStuck = stuckEntry != null
     this._reportedStuckSpans.delete(spanId)
 
     // Drop sync spans
@@ -1112,14 +1116,22 @@ export class FilteringSpanProcessor implements SpanProcessor {
       if (durationMs < thresholdMs) continue
 
       const spanId = span.spanContext().spanId
-      const reportedCount = this._reportedStuckSpans.get(spanId) ?? 0
+      const stuckEntry = this._reportedStuckSpans.get(spanId)
+      const reportedCount = stuckEntry?.count ?? 0
+
+      // After first report, wait another full threshold from last report time
+      if (stuckEntry && nowMs - stuckEntry.lastReportedMs <= thresholdMs)
+        continue
 
       // Only call onStuckSpan on first detection
       if (reportedCount === 0 && this._stuckSpanConfig.onStuckSpan) {
         if (this._stuckSpanConfig.onStuckSpan(readable) === false) continue
       }
 
-      this._reportedStuckSpans.set(spanId, reportedCount + 1)
+      this._reportedStuckSpans.set(spanId, {
+        count: reportedCount + 1,
+        lastReportedMs: nowMs,
+      })
       debug(
         'stuck span detected: %s (duration=%dms, count=%d)',
         readable.name,
@@ -1127,11 +1139,19 @@ export class FilteringSpanProcessor implements SpanProcessor {
         reportedCount + 1,
       )
 
+      // Generate a unique spanId for the snapshot so backends don't
+      // deduplicate/overwrite the original span
+      const snapshotSpanId = randomBytes(8).toString('hex')
+      const originalSpanContext = span.spanContext()
+
       const snapshotSpan = new SpanImpl({
         resource: readable.resource,
         scope: readable.instrumentationScope,
         context: ROOT_CONTEXT,
-        spanContext: span.spanContext(),
+        spanContext: {
+          ...originalSpanContext,
+          spanId: snapshotSpanId,
+        },
         name: `${readable.name} (incomplete)`,
         kind: readable.kind,
         parentSpanContext: readable.parentSpanContext,
@@ -1142,6 +1162,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
           [OPIN_TEL_INTERNAL.stuck.durationMs]: Math.round(durationMs),
           [OPIN_TEL_INTERNAL.stuck.isSnapshot]: true,
           [OPIN_TEL_INTERNAL.stuck.reportedCount]: reportedCount + 1,
+          [OPIN_TEL_INTERNAL.stuck.sourceSpanId]: spanId,
         },
         spanLimits: (span as any)._spanLimits,
         spanProcessor: this._wrapped,

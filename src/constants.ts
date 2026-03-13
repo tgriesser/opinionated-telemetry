@@ -34,6 +34,7 @@ export const OPIN_TEL_INTERNAL = {
     isSnapshot: `${prefix}stuck.is_snapshot`,
     durationMs: `${prefix}stuck.duration_ms`,
     reportedCount: `${prefix}stuck.reported_count`,
+    sourceSpanId: `${prefix}stuck.source_span_id`,
   },
   code: {
     type: `${prefix}code.type`,

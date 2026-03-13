@@ -554,7 +554,7 @@ describe('FilteringSpanProcessor', () => {
       vi.useRealTimers()
     })
 
-    it('re-reports stuck span each cycle with incrementing count', async () => {
+    it('re-reports stuck span after another full threshold (timer reset)', async () => {
       vi.useFakeTimers()
 
       const { tracer, getSpans, processor, exporter } = createTestProvider({
@@ -574,19 +574,29 @@ describe('FilteringSpanProcessor', () => {
       const firstBatch = exporter.findSpans('stuck-repeat (incomplete)')
       expect(firstBatch.length).toBeGreaterThanOrEqual(1)
       expect(firstBatch[0].attributes['opin_tel.stuck.reported_count']).toBe(1)
+      expect(
+        firstBatch[0].attributes['opin_tel.stuck.source_span_id'],
+      ).toBeDefined()
 
-      // Additional reap cycle
+      // 50ms later — still within threshold from last report, should NOT re-report
       vi.advanceTimersByTime(50)
       await processor.forceFlush()
 
+      const afterShortWait = exporter.findSpans('stuck-repeat (incomplete)')
+      expect(afterShortWait.length).toBe(firstBatch.length)
+
+      // Wait another full threshold from last report (100ms more)
+      vi.advanceTimersByTime(100)
+      await processor.forceFlush()
+
       const allSpans = exporter.findSpans('stuck-repeat (incomplete)')
-      // Should have more reports than before
       expect(allSpans.length).toBeGreaterThan(firstBatch.length)
-      // Last span should have incrementing count
       const last = allSpans[allSpans.length - 1]
-      expect(last.attributes['opin_tel.stuck.reported_count']).toBeGreaterThan(
-        1,
-      )
+      expect(last.attributes['opin_tel.stuck.reported_count']).toBe(2)
+
+      // Snapshot spans should have unique spanIds
+      const spanIds = allSpans.map((s) => s.spanContext().spanId)
+      expect(new Set(spanIds).size).toBe(spanIds.length)
 
       await processor.shutdown()
       vi.useRealTimers()
