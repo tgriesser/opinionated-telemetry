@@ -92,8 +92,18 @@ export interface StuckSpanConfig {
   thresholdMs?: number
   /** How often to check for stuck spans. Default: 5_000ms */
   intervalMs?: number
-  /** Called when a stuck span is detected, before exporting. Can return false to skip. */
-  onStuckSpan?: (span: Span & ReadableSpan) => boolean | void
+  /**
+   * Called when a stuck span is detected.
+   * - `void` / `true` — export snapshot, keep tracking (default)
+   * - `false` — skip snapshot, keep tracking
+   * - `'evict'` — export snapshot, then remove span from all tracking
+   * - `'drop'` — remove span from all tracking WITHOUT exporting snapshot
+   */
+  onStuckSpan?: (
+    span: Span & ReadableSpan,
+    durationMs: number,
+    reportedCount: number,
+  ) => boolean | 'evict' | 'drop' | void
 }
 
 export interface FilteringSpanProcessorConfig {
@@ -136,7 +146,7 @@ export interface FilteringSpanProcessorConfig {
    */
   onDroppedSpan?: (
     span: ReadableSpan,
-    reason: 'head' | 'tail' | 'burst' | 'sync' | 'conditional',
+    reason: 'head' | 'tail' | 'burst' | 'sync' | 'conditional' | 'stuck',
     durationMs?: number,
   ) => void
   /** Predicate to determine if a span should be aggregated. Return true for default config, or an AggregateConfig object. */
@@ -229,7 +239,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
   private _onDroppedSpan:
     | ((
         span: ReadableSpan,
-        reason: 'head' | 'tail' | 'burst' | 'sync' | 'conditional',
+        reason: 'head' | 'tail' | 'burst' | 'sync' | 'conditional' | 'stuck',
         durationMs?: number,
       ) => void)
     | null = null
@@ -1124,10 +1134,25 @@ export class FilteringSpanProcessor implements SpanProcessor {
       if (stuckEntry && nowMs - stuckEntry.lastReportedMs <= thresholdMs)
         continue
 
-      // Only call onStuckSpan on first detection
-      if (reportedCount === 0 && this._stuckSpanConfig.onStuckSpan) {
-        if (this._stuckSpanConfig.onStuckSpan(readable) === false) continue
+      // Call onStuckSpan on every report (not just first detection)
+      let stuckResult: boolean | 'evict' | 'drop' | void = undefined
+      if (this._stuckSpanConfig.onStuckSpan) {
+        stuckResult = this._stuckSpanConfig.onStuckSpan(
+          readable,
+          durationMs,
+          reportedCount,
+        )
       }
+
+      // 'drop' — evict from tracking without exporting snapshot
+      if (stuckResult === 'drop') {
+        this._evictStuckSpan(span, spanId)
+        this._onDroppedSpan?.(readable, 'stuck', durationMs)
+        continue
+      }
+
+      // false — skip snapshot but keep tracking
+      if (stuckResult === false) continue
 
       this._reportedStuckSpans.set(spanId, {
         count: reportedCount + 1,
@@ -1181,6 +1206,29 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
       this._enrichSpan(snapshotSpan)
       snapshotSpan.end()
+
+      // 'evict' — export snapshot (above), then remove from tracking
+      if (stuckResult === 'evict') {
+        this._evictStuckSpan(span, spanId)
+      }
+    }
+  }
+
+  /**
+   * Remove a stuck span from all internal tracking structures.
+   */
+  private _evictStuckSpan(span: Span, spanId: string): void {
+    this._allSpans.delete(span)
+    this._activeSpanIds.delete(spanId)
+    this._reportedStuckSpans.delete(spanId)
+    this._collapseSpans.delete(spanId)
+    this._conditionalDropFns.delete(spanId)
+    const buffered = this._conditionalDropBuffer.get(spanId)
+    if (buffered) {
+      this._conditionalDropBuffer.delete(spanId)
+      for (const child of buffered) {
+        this._wrapped.onEnd(child)
+      }
     }
   }
 

@@ -892,6 +892,208 @@ describe('FilteringSpanProcessor', () => {
 
       vi.useRealTimers()
     })
+
+    it('onStuckSpan returning "drop" evicts span without exporting snapshot', async () => {
+      vi.useFakeTimers()
+
+      const onDroppedSpan = vi.fn()
+      const { tracer, processor, exporter } = createTestProvider({
+        dropSyncSpans: false,
+        onDroppedSpan,
+        stuckSpanDetection: {
+          thresholdMs: 100,
+          intervalMs: 50,
+          onStuckSpan: () => 'drop' as const,
+        },
+      })
+
+      tracer.startSpan('drop-stuck')
+      vi.advanceTimersByTime(150)
+      await processor.forceFlush()
+
+      // No snapshot should be exported
+      expect(exporter.findSpan('drop-stuck (incomplete)')).toBeUndefined()
+      // Span should be evicted from _allSpans
+      expect((processor as any)._allSpans.size).toBe(0)
+      // onDroppedSpan should be called with 'stuck' reason
+      expect(onDroppedSpan).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'drop-stuck' }),
+        'stuck',
+        expect.any(Number),
+      )
+
+      await processor.shutdown()
+      vi.useRealTimers()
+    })
+
+    it('onStuckSpan returning "evict" exports snapshot then evicts span', async () => {
+      vi.useFakeTimers()
+
+      const { tracer, processor, exporter } = createTestProvider({
+        dropSyncSpans: false,
+        stuckSpanDetection: {
+          thresholdMs: 100,
+          intervalMs: 50,
+          onStuckSpan: () => 'evict' as const,
+        },
+      })
+
+      tracer.startSpan('evict-stuck')
+      vi.advanceTimersByTime(150)
+      await processor.forceFlush()
+
+      // Snapshot should be exported
+      const snapshot = exporter.findSpan('evict-stuck (incomplete)')
+      expect(snapshot).toBeDefined()
+      expect(snapshot!.attributes['opin_tel.stuck.is_snapshot']).toBe(true)
+      // Span should be evicted from _allSpans
+      expect((processor as any)._allSpans.size).toBe(0)
+      expect((processor as any)._reportedStuckSpans.size).toBe(0)
+
+      await processor.shutdown()
+      vi.useRealTimers()
+    })
+
+    it('onStuckSpan is called on every re-report with durationMs and reportedCount', async () => {
+      vi.useFakeTimers()
+
+      const onStuckSpan = vi.fn()
+      const { tracer, processor, exporter } = createTestProvider({
+        dropSyncSpans: false,
+        stuckSpanDetection: {
+          thresholdMs: 100,
+          intervalMs: 50,
+          onStuckSpan,
+        },
+      })
+
+      tracer.startSpan('re-report')
+
+      // First detection
+      vi.advanceTimersByTime(150)
+      await processor.forceFlush()
+      expect(onStuckSpan).toHaveBeenCalledTimes(1)
+      expect(onStuckSpan).toHaveBeenLastCalledWith(
+        expect.objectContaining({ name: 're-report' }),
+        expect.any(Number),
+        0, // reportedCount is 0 on first detection
+      )
+      expect(onStuckSpan.mock.calls[0][1]).toBeGreaterThanOrEqual(100)
+
+      // Second detection after threshold
+      vi.advanceTimersByTime(100)
+      await processor.forceFlush()
+      expect(onStuckSpan).toHaveBeenCalledTimes(2)
+      expect(onStuckSpan).toHaveBeenLastCalledWith(
+        expect.objectContaining({ name: 're-report' }),
+        expect.any(Number),
+        1, // reportedCount is 1 on second detection
+      )
+
+      await processor.shutdown()
+      vi.useRealTimers()
+    })
+
+    it('late .end() after eviction still exports span normally', async () => {
+      vi.useFakeTimers()
+
+      const { tracer, processor, exporter } = createTestProvider({
+        dropSyncSpans: false,
+        stuckSpanDetection: {
+          thresholdMs: 100,
+          intervalMs: 50,
+          onStuckSpan: () => 'evict' as const,
+        },
+      })
+
+      const span = tracer.startSpan('late-end')
+      vi.advanceTimersByTime(150)
+      await processor.forceFlush()
+
+      // Snapshot exported, span evicted
+      expect(exporter.findSpan('late-end (incomplete)')).toBeDefined()
+      expect((processor as any)._allSpans.size).toBe(0)
+
+      // Late end — should still export normally
+      span.end()
+      await processor.forceFlush()
+
+      const realSpan = exporter.findSpan('late-end')
+      expect(realSpan).toBeDefined()
+      // Should NOT have isSnapshot=false marker since it was evicted (not tracked as stuck)
+      expect(realSpan!.attributes['opin_tel.stuck.is_snapshot']).toBeUndefined()
+
+      await processor.shutdown()
+      vi.useRealTimers()
+    })
+
+    it('"drop" fires onDroppedSpan with reason "stuck"', async () => {
+      vi.useFakeTimers()
+
+      const onDroppedSpan = vi.fn()
+      const { tracer, processor } = createTestProvider({
+        dropSyncSpans: false,
+        onDroppedSpan,
+        stuckSpanDetection: {
+          thresholdMs: 100,
+          intervalMs: 50,
+          onStuckSpan: () => 'drop' as const,
+        },
+      })
+
+      tracer.startSpan('dropped-stuck')
+      vi.advanceTimersByTime(150)
+      await processor.forceFlush()
+
+      expect(onDroppedSpan).toHaveBeenCalledTimes(1)
+      const [span, reason, duration] = onDroppedSpan.mock.calls[0]
+      expect(reason).toBe('stuck')
+      expect(duration).toBeGreaterThanOrEqual(100)
+
+      await processor.shutdown()
+      vi.useRealTimers()
+    })
+
+    it('conditional drop buffer is flushed on eviction', async () => {
+      vi.useFakeTimers()
+
+      const { provider, processor, exporter } = createTestProvider({
+        dropSyncSpans: false,
+        stuckSpanDetection: {
+          thresholdMs: 100,
+          intervalMs: 50,
+          onStuckSpan: () => 'evict' as const,
+        },
+        globalHooks: {
+          onStart: (span) => {
+            if (span.name === 'parent-stuck') {
+              return {
+                shouldDrop: () => true,
+              }
+            }
+          },
+        },
+      })
+
+      const tracer = provider.getTracer('test')
+      const parent = tracer.startSpan('parent-stuck')
+      // Create a child that gets buffered in conditionalDropBuffer
+      context.with(trace.setSpan(context.active(), parent), () => {
+        const child = tracer.startSpan('buffered-child')
+        child.end()
+      })
+
+      // Wait for parent to be stuck
+      vi.advanceTimersByTime(150)
+      await processor.forceFlush()
+
+      // Parent evicted — buffered child should be flushed to export
+      const child = exporter.findSpan('buffered-child')
+      expect(child).toBeDefined()
+
+      await processor.shutdown()
+      vi.useRealTimers()
+    })
   })
 
   describe('span after shutdown', () => {

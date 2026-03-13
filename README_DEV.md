@@ -85,7 +85,7 @@ opinionatedTelemetryInit({
   onSpanAfterShutdown?: (span) => void,              // default: logger.warn
   shutdownSignal?: string | null,                    // default: 'SIGTERM'
   aggregateSpan?: (span) => boolean | AggregateConfig, // default: undefined
-  onDroppedSpan?: (span, reason, durationMs?) => void, // called on dropped/sampled spans
+  onDroppedSpan?: (span, reason, durationMs?) => void, // called on dropped/sampled/stuck spans
   instrumentations: Instrumentation[],
   instrumentationHooks?: Record<string, OpinionatedOptions>,
   globalHooks?: GlobalHooks,                         // hooks for all spans
@@ -122,13 +122,25 @@ Detects spans that remain in-flight longer than a threshold and exports diagnost
 stuckSpanDetection: {
   thresholdMs: 60_000,   // how long before a span is "stuck"
   intervalMs: 5_000,     // how often to check
-  onStuckSpan: (span) => {
-    // return false to skip exporting this snapshot
+  onStuckSpan: (span, durationMs, reportedCount) => {
+    // Called on every report (not just first detection).
+    // reportedCount is 0 on first detection, 1 on second, etc.
+    //
+    // Return values:
+    //   void / true  — export snapshot, keep tracking (default)
+    //   false        — skip snapshot, keep tracking
+    //   'evict'      — export snapshot, then remove span from all tracking
+    //   'drop'       — remove span from all tracking WITHOUT exporting snapshot
+
+    // Example: evict after 3 reports to prevent memory leaks
+    if (reportedCount >= 2) return 'evict'
   },
 }
 ```
 
-Stuck span snapshots are exported with the original span's trace/span IDs, an `(incomplete)` name suffix, and attributes `opin_tel.stuck.duration_ms` and `opin_tel.stuck.is_snapshot`. They also receive memory delta, ELU, and instrumentation hook enrichment.
+Stuck span snapshots are exported with the original span's trace/span IDs, an `(incomplete)` name suffix, and attributes `opin_tel.stuck.duration_ms`, `opin_tel.stuck.is_snapshot`, and `opin_tel.stuck.reported_count`. They also receive memory delta, ELU, and instrumentation hook enrichment.
+
+**Eviction** (`'evict'` / `'drop'`): Removes the span from all internal tracking (`_allSpans`, `_activeSpanIds`, `_reportedStuckSpans`, collapse state, conditional drop buffers). This prevents memory leaks from spans whose `.end()` is never called. If the span later has `.end()` called, it flows through the normal export path (the eviction is a no-op for cleanup). `'drop'` also fires `onDroppedSpan` with reason `'stuck'`.
 
 #### `batchProcessorConfig`
 
@@ -686,14 +698,14 @@ When combined, rates compose multiplicatively. Tail overrides head for the base 
 
 ### `onDroppedSpan`
 
-Called whenever a span is dropped due to sync span dropping, conditional dropping, sampling, or burst protection. Useful for writing sampled-out spans to a compressed ndjson file or other secondary storage for later retrieval.
+Called whenever a span is dropped due to sync span dropping, conditional dropping, sampling, burst protection, or stuck span eviction via `'drop'`. Useful for writing sampled-out spans to a compressed ndjson file or other secondary storage for later retrieval.
 
 ```ts
 opinionatedTelemetryInit({
   // ...
   onDroppedSpan: (span, reason, durationMs) => {
-    // reason: 'head' | 'tail' | 'burst' | 'sync' | 'conditional'
-    // durationMs: provided for 'tail', 'burst', and 'conditional' drops
+    // reason: 'head' | 'tail' | 'burst' | 'sync' | 'conditional' | 'stuck'
+    // durationMs: provided for 'tail', 'burst', 'conditional', and 'stuck' drops
     droppedSpanLog.write(
       JSON.stringify({
         name: span.name,
