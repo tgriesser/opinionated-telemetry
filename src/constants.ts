@@ -33,6 +33,7 @@ export const OPIN_TEL_INTERNAL = {
   stuck: {
     isSnapshot: `${prefix}stuck.is_snapshot`,
     durationMs: `${prefix}stuck.duration_ms`,
+    reportedCount: `${prefix}stuck.reported_count`,
   },
   code: {
     type: `${prefix}code.type`,

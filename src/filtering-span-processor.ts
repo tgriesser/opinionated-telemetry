@@ -203,7 +203,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
   private _memoryDeltaKeys: MemoryKey[] = []
   private _eventLoopUtilization: boolean | 'root' = false
   private _stuckSpanInterval: ReturnType<typeof setInterval> | null = null
-  private _reportedStuckSpans = new Set<string>()
+  private _reportedStuckSpans = new Map<string, number>()
   private _stuckSpanConfig: StuckSpanConfig | null = null
   private _sampling: SamplingConfig | null = null
   private _headDecisions = new Map<string, number>()
@@ -479,6 +479,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
     this._allSpans.delete(span as Span)
     this._activeSpanIds.delete(spanId)
+    const wasReportedStuck = this._reportedStuckSpans.has(spanId)
     this._reportedStuckSpans.delete(spanId)
 
     // Drop sync spans
@@ -497,6 +498,9 @@ export class FilteringSpanProcessor implements SpanProcessor {
         traceDropped.set(spanId, span.parentSpanContext)
         this._onDroppedSpan?.(span, 'sync')
         this._incrementTraceCount(traceId, 'droppedSync')
+        // Clean up any shouldDrop/collapse state for this sync-dropped span
+        this._collapseSpans.delete(spanId)
+        this._cleanupConditionalDrop(spanId, span)
         return
       }
     }
@@ -509,8 +513,30 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
     this._enrichSpan(span as Span & ReadableSpan)
 
+    // If this span was previously reported as stuck, mark it as completed (not a snapshot)
+    if (wasReportedStuck) {
+      ;(span as Span & ReadableSpan).setAttribute(
+        OPIN_TEL_INTERNAL.stuck.isSnapshot,
+        false,
+      )
+    }
+
     if (isSpanImpl) {
       span['_ended'] = true
+    }
+
+    // If the span was reported as stuck, skip collapse/shouldDrop — always export it
+    if (wasReportedStuck) {
+      // Clean up any pending collapse/shouldDrop state
+      this._collapseSpans.delete(spanId)
+      this._conditionalDropFns.delete(spanId)
+      const buffered = this._conditionalDropBuffer.get(spanId) ?? []
+      this._conditionalDropBuffer.delete(spanId)
+      for (const child of buffered) {
+        this._finishSpan(child)
+      }
+      this._finishSpan(span)
+      return
     }
 
     // Collapse drop decision (not part of enrichment)
@@ -646,6 +672,31 @@ export class FilteringSpanProcessor implements SpanProcessor {
       this._collapseSpans.set(spanId, span)
     } else if (result.shouldDrop) {
       this._conditionalDropFns.set(spanId, result.shouldDrop)
+    }
+  }
+
+  /**
+   * Clean up conditional drop state for a span that is being dropped/skipped.
+   * Flushes any buffered children, reparenting them to the span's parent.
+   */
+  private _cleanupConditionalDrop(spanId: string, span: ReadableSpan): void {
+    if (this._conditionalDropFns.has(spanId)) {
+      this._conditionalDropFns.delete(spanId)
+      const buffered = this._conditionalDropBuffer.get(spanId) ?? []
+      this._conditionalDropBuffer.delete(spanId)
+      for (const child of buffered) {
+        // Reparent to grandparent
+        const isChildImpl = child instanceof SpanImpl
+        if (isChildImpl) {
+          child['_ended'] = false
+        }
+        // @ts-expect-error — readonly, reparenting buffered child
+        child['parentSpanContext'] = span.parentSpanContext
+        if (isChildImpl) {
+          child['_ended'] = true
+        }
+        this._finishSpan(child)
+      }
     }
   }
 
@@ -1061,17 +1112,19 @@ export class FilteringSpanProcessor implements SpanProcessor {
       if (durationMs < thresholdMs) continue
 
       const spanId = span.spanContext().spanId
-      if (this._reportedStuckSpans.has(spanId)) continue
+      const reportedCount = this._reportedStuckSpans.get(spanId) ?? 0
 
-      if (this._stuckSpanConfig.onStuckSpan) {
+      // Only call onStuckSpan on first detection
+      if (reportedCount === 0 && this._stuckSpanConfig.onStuckSpan) {
         if (this._stuckSpanConfig.onStuckSpan(readable) === false) continue
       }
 
-      this._reportedStuckSpans.add(spanId)
+      this._reportedStuckSpans.set(spanId, reportedCount + 1)
       debug(
-        'stuck span detected: %s (duration=%dms)',
+        'stuck span detected: %s (duration=%dms, count=%d)',
         readable.name,
         durationMs,
+        reportedCount + 1,
       )
 
       const snapshotSpan = new SpanImpl({
@@ -1088,6 +1141,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
           ...readable.attributes,
           [OPIN_TEL_INTERNAL.stuck.durationMs]: Math.round(durationMs),
           [OPIN_TEL_INTERNAL.stuck.isSnapshot]: true,
+          [OPIN_TEL_INTERNAL.stuck.reportedCount]: reportedCount + 1,
         },
         spanLimits: (span as any)._spanLimits,
         spanProcessor: this._wrapped,

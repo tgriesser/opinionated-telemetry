@@ -554,7 +554,7 @@ describe('FilteringSpanProcessor', () => {
       vi.useRealTimers()
     })
 
-    it('does not re-report same stuck span', async () => {
+    it('re-reports stuck span each cycle with incrementing count', async () => {
       vi.useFakeTimers()
 
       const { tracer, getSpans, processor, exporter } = createTestProvider({
@@ -565,15 +565,28 @@ describe('FilteringSpanProcessor', () => {
         },
       })
 
-      tracer.startSpan('stuck-once')
+      tracer.startSpan('stuck-repeat')
 
-      // First reap cycle
+      // First reap cycle — past threshold
       vi.advanceTimersByTime(150)
-      // Second reap cycle
-      vi.advanceTimersByTime(50)
 
       await processor.forceFlush()
-      exporter.assertSpanCount('stuck-once (incomplete)', 1)
+      const firstBatch = exporter.findSpans('stuck-repeat (incomplete)')
+      expect(firstBatch.length).toBeGreaterThanOrEqual(1)
+      expect(firstBatch[0].attributes['opin_tel.stuck.reported_count']).toBe(1)
+
+      // Additional reap cycle
+      vi.advanceTimersByTime(50)
+      await processor.forceFlush()
+
+      const allSpans = exporter.findSpans('stuck-repeat (incomplete)')
+      // Should have more reports than before
+      expect(allSpans.length).toBeGreaterThan(firstBatch.length)
+      // Last span should have incrementing count
+      const last = allSpans[allSpans.length - 1]
+      expect(last.attributes['opin_tel.stuck.reported_count']).toBeGreaterThan(
+        1,
+      )
 
       await processor.shutdown()
       vi.useRealTimers()
@@ -608,6 +621,121 @@ describe('FilteringSpanProcessor', () => {
 
       // Should get a new stuck report (the old span ID was cleaned up)
       expect(exporter.findSpan('will-end (incomplete)')).toBeDefined()
+
+      await processor.shutdown()
+      vi.useRealTimers()
+    })
+
+    it('marks completed span with isSnapshot=false when previously stuck', async () => {
+      vi.useFakeTimers()
+
+      const { tracer, processor, exporter } = createTestProvider({
+        dropSyncSpans: false,
+        stuckSpanDetection: {
+          thresholdMs: 100,
+          intervalMs: 200,
+        },
+      })
+
+      const span = tracer.startSpan('was-stuck')
+      vi.advanceTimersByTime(200)
+      await processor.forceFlush()
+
+      // Snapshot exported with isSnapshot=true
+      const snapshot = exporter.findSpan('was-stuck (incomplete)')
+      expect(snapshot).toBeDefined()
+      expect(snapshot!.attributes['opin_tel.stuck.is_snapshot']).toBe(true)
+
+      // Now end the real span
+      span.end()
+      await processor.forceFlush()
+
+      // Real span should have isSnapshot=false to indicate it was previously stuck
+      const real = exporter.findSpan('was-stuck')
+      expect(real).toBeDefined()
+      expect(real!.attributes['opin_tel.stuck.is_snapshot']).toBe(false)
+
+      await processor.shutdown()
+      vi.useRealTimers()
+    })
+
+    it('stuck span overrides collapse — exports instead of dropping', async () => {
+      vi.useFakeTimers()
+
+      const { provider, processor, exporter } = createTestProvider({
+        dropSyncSpans: false,
+        stuckSpanDetection: {
+          thresholdMs: 100,
+          intervalMs: 200,
+        },
+        instrumentationHooks: {
+          '@test/stuck-collapse': {
+            collapse: true,
+          },
+        },
+      })
+
+      const rootTracer = provider.getTracer('test')
+      const scopedTracer = provider.getTracer('@test/stuck-collapse')
+      const root = rootTracer.startSpan('root')
+      let mid: ReturnType<typeof scopedTracer.startSpan>
+      context.with(trace.setSpan(context.active(), root), () => {
+        mid = scopedTracer.startSpan('collapse-me')
+      })
+
+      // Wait for stuck detection
+      vi.advanceTimersByTime(200)
+      await processor.forceFlush()
+      exporter.assertSpanExists('collapse-me (incomplete)')
+
+      // End the stuck span — should be exported even though collapse was set
+      mid!.end()
+      root.end()
+      await processor.forceFlush()
+
+      // The span was stuck, so collapse is overridden — it gets exported
+      exporter.assertSpanExists('collapse-me')
+
+      await processor.shutdown()
+      vi.useRealTimers()
+    })
+
+    it('stuck span overrides shouldDrop — exports instead of dropping', async () => {
+      vi.useFakeTimers()
+
+      const { provider, processor, exporter } = createTestProvider({
+        dropSyncSpans: false,
+        stuckSpanDetection: {
+          thresholdMs: 100,
+          intervalMs: 200,
+        },
+        globalHooks: {
+          onStart: (span) => {
+            if (span.name === 'maybe-drop') {
+              return { shouldDrop: () => true }
+            }
+          },
+        },
+      })
+
+      const tracer = provider.getTracer('test')
+      const root = tracer.startSpan('root')
+      let target: ReturnType<typeof tracer.startSpan>
+      context.with(trace.setSpan(context.active(), root), () => {
+        target = tracer.startSpan('maybe-drop')
+      })
+
+      // Wait for stuck detection
+      vi.advanceTimersByTime(200)
+      await processor.forceFlush()
+      exporter.assertSpanExists('maybe-drop (incomplete)')
+
+      // End the stuck span — shouldDrop says drop, but stuck overrides
+      target!.end()
+      root.end()
+      await processor.forceFlush()
+
+      exporter.assertSpanExists('maybe-drop')
 
       await processor.shutdown()
       vi.useRealTimers()
@@ -675,7 +803,7 @@ describe('FilteringSpanProcessor', () => {
         dropSyncSpans: false,
         stuckSpanDetection: {
           thresholdMs: 100,
-          intervalMs: 50,
+          intervalMs: 200,
         },
         instrumentationHooks: {
           '@test/stuck-hooks': {
@@ -690,7 +818,8 @@ describe('FilteringSpanProcessor', () => {
       const scopedTracer = provider.getTracer('@test/stuck-hooks')
       scopedTracer.startSpan('stuck-hooked')
 
-      vi.advanceTimersByTime(150)
+      // Single reap cycle at 200ms (past 100ms threshold)
+      vi.advanceTimersByTime(200)
 
       await processor.forceFlush()
       exporter.assertSpanExists('enriched:stuck-hooked (incomplete)')
@@ -3135,6 +3264,70 @@ describe('FilteringSpanProcessor', () => {
       await provider.forceFlush()
 
       exporter.assertSpanExists('buffered-child')
+    })
+
+    it('sync-dropped span with shouldDrop cleans up buffered children', async () => {
+      const { provider, exporter, shutdown } = createTestProvider({
+        // Only sync-drop the parent, not the child
+        dropSyncSpans: (span) => span.name === 'sync-parent',
+        instrumentationHooks: {
+          '@test/sync-drop': {
+            onStart: (span) => {
+              if (span.name === 'sync-parent') {
+                return { shouldDrop: () => true }
+              }
+            },
+          },
+        },
+      })
+
+      const tracer = provider.getTracer('@test/sync-drop')
+      const root = provider.getTracer('test').startSpan('root')
+      context.with(trace.setSpan(context.active(), root), () => {
+        const parent = tracer.startSpan('sync-parent')
+        context.with(trace.setSpan(context.active(), parent), () => {
+          const child = provider.getTracer('test').startSpan('child')
+          child.end()
+        })
+        parent.end()
+      })
+      root.end()
+      await shutdown()
+
+      // sync-parent should be dropped (sync drop)
+      exporter.assertSpanNotExists('sync-parent')
+      // child should still be exported — the shouldDrop buffer must be flushed
+      // when the parent is sync-dropped
+      exporter.assertSpanExists('child')
+    })
+
+    it('sync-dropped span with collapse cleans up collapse state', async () => {
+      const { provider, exporter, shutdown } = createTestProvider({
+        dropSyncSpans: (span) => span.name === 'sync-collapse',
+        instrumentationHooks: {
+          '@test/sync-collapse': {
+            collapse: true,
+          },
+        },
+      })
+
+      const tracer = provider.getTracer('@test/sync-collapse')
+      const root = provider.getTracer('test').startSpan('root')
+      context.with(trace.setSpan(context.active(), root), () => {
+        const mid = tracer.startSpan('sync-collapse')
+        context.with(trace.setSpan(context.active(), mid), () => {
+          const child = provider.getTracer('test').startSpan('child')
+          child.end()
+        })
+        mid.end()
+      })
+      root.end()
+      await shutdown()
+
+      exporter.assertSpanNotExists('sync-collapse')
+      exporter.assertSpanExists('child')
+      // Verify no stale entries leaked in _collapseSpans
+      // (child should have root as parent since collapse means reparent)
     })
 
     it('leaf span with shouldDrop and no children', async () => {
