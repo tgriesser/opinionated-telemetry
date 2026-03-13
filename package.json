@@ -80,6 +80,7 @@
     "lint": "eslint src/ test/",
     "lint:deps": "knip",
     "prepare": "husky",
+    "prepublishOnly": "npm run build",
     "test": "vitest run",
     "test:typecheck": "tsc -p tsconfig.test.json",
     "test:watch": "vitest",
