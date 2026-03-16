@@ -18,8 +18,18 @@ export {
   sanitizeBindings,
   defaultHash,
 } from './integrations/knex.js'
+export type { KnexQueryHookContext } from './integrations/knex.js'
 
 export { wrapModuleExports, wrapFunction } from './wrap-exports.js'
+
+export {
+  stabilizeQuery,
+  queryRequestTag,
+  stableQueryTag,
+  queryResponseTag,
+  stableQueryHash,
+} from './sql-utils.js'
+export type { StableQueryResult } from './sql-utils.js'
 
 export type {
   OpinionatedTelemetryConfig,

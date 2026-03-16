@@ -833,6 +833,51 @@ opinionatedTelemetryInit({
 })
 ```
 
+## SQL Utilities
+
+Reusable helpers for normalizing SQL queries and generating CRC32 etags for caching/dedup. Handles multiple binding styles (`?`, `$1`, `?::type`, `$1::type`, `DEFAULT`).
+
+```ts
+import {
+  stabilizeQuery,
+  queryRequestTag,
+  stableQueryTag,
+  queryResponseTag,
+  stableQueryHash,
+} from 'opinionated-telemetry'
+```
+
+### `stabilizeQuery(sql): StableQueryResult`
+
+Regex-normalizes SQL by collapsing variadic binding groups into stable placeholders. Single groups like `(?, ?, ?)` become `(_)`, multiple consecutive groups like `(_), (_), (_)` become `(_+)`.
+
+```ts
+const result = stabilizeQuery(
+  'INSERT INTO t (a, b) VALUES (?, ?), (?, ?), (?, ?)',
+)
+// result.stableQuery === 'INSERT INTO t (a, b) VALUES (_+)'
+// result.groupCount === 3
+// result.groupedBindingCount === 6
+```
+
+Returns `{ stableQuery: string, groupCount: number, groupedBindingCount: number }`.
+
+### `queryRequestTag(sql, bindings?): string`
+
+CRC32 hash of the raw SQL + actual bindings — exact cache key for dedup of identical invocations.
+
+### `stableQueryTag(sql, bindings?): string`
+
+CRC32 of the stabilized SQL + sanitized binding types — groups queries by shape. Same structure with same binding types produces the same tag, regardless of actual values.
+
+### `queryResponseTag(result, maxBytes?): string`
+
+CRC32 hash of `JSON.stringify(result)`. Optional `maxBytes` truncates the serialized result before hashing.
+
+### `stableQueryHash(sql): string`
+
+CRC32 of just the stabilized query text — for grouping queries by shape regardless of binding count or values.
+
 ## Integration Helpers
 
 Each integration is a separate entry point to avoid pulling unnecessary dependencies.
@@ -876,23 +921,28 @@ Returns a cleanup function to remove the listener.
 
 ```ts
 import { otelInitKnex } from 'opinionated-telemetry/integrations/knex'
+import { queryRequestTag } from 'opinionated-telemetry'
 
 const cleanup = otelInitKnex(knexInstance, {
   captureBindings: true,
   capturePoolStats: true,
-  hashFn: (input) => customHash(input),
+  queryHook: ({ sql, bindings, stable, setAttribute }) => {
+    setAttribute('db.query.request_tag', queryRequestTag(sql, bindings))
+    setAttribute('db.query.method', sql.split(' ')[0].toUpperCase())
+  },
 })
 
 // Later: cleanup() to remove the listener
 ```
 
-| Option             | Description                                                                                                      |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| `captureBindings`  | Capture sanitized bindings as `db.query.sanitized_bindings` and a CRC32 hash as `db.query.hash`. Default: `true` |
-| `capturePoolStats` | Capture connection pool stats (`db.pool.used_count`, `db.pool.free_count`, etc.). Default: `true`                |
-| `hashFn`           | Custom hash function for query+bindings. Default: CRC32 via `node:zlib`                                          |
+| Option             | Description                                                                                                                      |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `captureBindings`  | Capture sanitized bindings as `db.query.sanitized_bindings` and a CRC32 hash as `db.query.hash`. Default: `true`                 |
+| `capturePoolStats` | Capture connection pool stats (`db.pool.used_count`, `db.pool.free_count`, etc.). Default: `true`                                |
+| `hashFn`           | Custom hash function for query+bindings. Default: CRC32 via `node:zlib`                                                          |
+| `queryHook`        | Custom hook called per query with `{ sql, bindings, stable, setAttribute }`. Use to set additional attributes like request tags. |
 
-Span attributes set: `db.connection.id`, `db.tx.id`, `db.timeout`, `db.query.sanitized_bindings`, `db.query.hash`, `db.pool.*`.
+Span attributes set: `db.connection.id`, `db.tx.id`, `db.timeout`, `db.query.stable` (stabilized SQL shape), `db.query.stable_hash` (CRC32 of stable shape), `db.query.group_count`, `db.query.grouped_binding_count`, `db.query.sanitized_bindings`, `db.query.hash`, `db.pool.*`.
 
 ### GraphQL
 

@@ -1,8 +1,21 @@
 import { crc32 } from 'node:zlib'
 import { trace } from '@opentelemetry/api'
 import debugLib from 'debug'
+import { stabilizeQuery } from '../sql-utils.js'
+import type { StableQueryResult } from '../sql-utils.js'
 
 const debug = debugLib('opin_tel:knex')
+
+export interface KnexQueryHookContext {
+  /** The raw SQL string */
+  sql: string
+  /** The query bindings array (if present) */
+  bindings: any[] | undefined
+  /** Result of stabilizeQuery(sql) */
+  stable: StableQueryResult
+  /** Set a span attribute */
+  setAttribute: (key: string, value: string | number | boolean) => void
+}
 
 export interface KnexOtelConfig {
   /** Custom hash function for query+bindings. Default uses CRC32 */
@@ -13,6 +26,11 @@ export interface KnexOtelConfig {
   captureBindings?: boolean
   /** Capture pool stats. Default: true */
   capturePoolStats?: boolean
+  /**
+   * Custom hook called for each query, after default attributes are set.
+   * Use to set additional attributes like request tags, response tags, etc.
+   */
+  queryHook?: (ctx: KnexQueryHookContext) => void
 }
 
 interface KnexQueryInfo {
@@ -33,6 +51,9 @@ const ATTRS = {
   TX_ID: 'db.tx.id',
   TIMEOUT: 'db.timeout',
   STABLE_QUERY: 'db.query.stable',
+  STABLE_QUERY_HASH: 'db.query.stable_hash',
+  GROUP_COUNT: 'db.query.group_count',
+  GROUPED_BINDING_COUNT: 'db.query.grouped_binding_count',
   QUERY_HASH: 'db.query.hash',
   BINDINGS: 'db.query.sanitized_bindings',
 }
@@ -115,6 +136,7 @@ export function otelInitKnex(
   const sanitizeFn = config?.sanitizeBindingsFn ?? sanitizeBindings
   const captureBindings = config?.captureBindings ?? true
   const capturePoolStats = config?.capturePoolStats ?? true
+  const queryHook = config?.queryHook
 
   debug('attaching knex query listener')
 
@@ -142,12 +164,30 @@ export function otelInitKnex(
       }
     }
 
+    let stable: StableQueryResult | undefined
+    if (info.sql) {
+      stable = stabilizeQuery(info.sql)
+      toSet[ATTRS.STABLE_QUERY] = stable.stableQuery
+      toSet[ATTRS.STABLE_QUERY_HASH] = crc32(stable.stableQuery).toString(16)
+      toSet[ATTRS.GROUP_COUNT] = stable.groupCount
+      toSet[ATTRS.GROUPED_BINDING_COUNT] = stable.groupedBindingCount
+    }
+
     if (captureBindings && Array.isArray(info.bindings)) {
       toSet[ATTRS.BINDINGS] = sanitizeFn(info.bindings)
       toSet[ATTRS.QUERY_HASH] = hashFn([info.sql, info.bindings])
     }
 
     span.setAttributes(toSet)
+
+    if (queryHook && info.sql && stable) {
+      queryHook({
+        sql: info.sql,
+        bindings: info.bindings,
+        stable,
+        setAttribute: (key, value) => span.setAttribute(key, value),
+      })
+    }
   }
 
   knexInstance.on('query', onQuery)

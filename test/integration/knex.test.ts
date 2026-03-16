@@ -220,6 +220,53 @@ describe('otelInitKnex (real Knex + SQLite)', () => {
     )
   })
 
+  it('sets stable query attributes with group count and hash', async () => {
+    const { tracer, exporter, provider } = createSimpleProvider()
+    knex = createKnex()
+    otelInitKnex(knex)
+
+    await knex.raw('CREATE TABLE t_stable (id INTEGER, name TEXT, email TEXT)')
+
+    await tracer.startActiveSpan('db-query', async (span) => {
+      await knex('t_stable').insert({ id: 1, name: 'Alice', email: 'a@b.c' })
+      span.end()
+    })
+
+    await provider.forceFlush()
+    const dbSpan = exporter.assertSpanExists('db-query')
+    expect(dbSpan.attributes['db.query.stable']).toBeDefined()
+    expect(dbSpan.attributes['db.query.stable_hash']).toMatch(/^[0-9a-f]+$/)
+    expect(dbSpan.attributes['db.query.group_count']).toBeTypeOf('number')
+    expect(dbSpan.attributes['db.query.grouped_binding_count']).toBeTypeOf(
+      'number',
+    )
+  })
+
+  it('calls queryHook with sql, bindings, stable result, and setAttribute', async () => {
+    const { tracer, exporter, provider } = createSimpleProvider()
+    knex = createKnex()
+    otelInitKnex(knex, {
+      queryHook: ({ sql, bindings, stable, setAttribute }) => {
+        setAttribute('custom.sql_length', sql.length)
+        setAttribute('custom.binding_count', bindings?.length ?? 0)
+        setAttribute('custom.stable_query', stable.stableQuery)
+      },
+    })
+
+    await knex.raw('CREATE TABLE t_hook (id INTEGER, name TEXT)')
+
+    await tracer.startActiveSpan('db-query', async (span) => {
+      await knex('t_hook').insert({ id: 1, name: 'test' })
+      span.end()
+    })
+
+    await provider.forceFlush()
+    const dbSpan = exporter.assertSpanExists('db-query')
+    expect(dbSpan.attributes['custom.sql_length']).toBeTypeOf('number')
+    expect(dbSpan.attributes['custom.binding_count']).toBe(2)
+    expect(dbSpan.attributes['custom.stable_query']).toBeDefined()
+  })
+
   it('skips query enrichment when no active span', async () => {
     const { exporter, provider } = createSimpleProvider()
     knex = createKnex()
