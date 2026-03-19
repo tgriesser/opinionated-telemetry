@@ -11,6 +11,7 @@ export type {
 } from './filtering-span-processor.js'
 
 export { withBaggage, getBaggageValue } from './baggage.js'
+export { setTraceContext, getRootSpan } from './trace-context.js'
 export { FilteredBaggagePropagator } from './filtered-baggage-propagator.js'
 
 export {

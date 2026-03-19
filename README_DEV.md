@@ -473,6 +473,42 @@ withBaggage({ 'app.account_id': '123' }, () => {
 })
 ```
 
+### Trace-level context
+
+Set attributes that apply to **all spans in a trace**. Useful for enriching spans with information discovered mid-trace (e.g. after user authentication), or when wrapping with baggage isn't feasible. Trace context attributes never overwrite existing span attributes — span-level values always take precedence.
+
+When using tail-based sampling, trace context is applied retroactively to buffered spans before they are exported.
+
+```ts
+import { setTraceContext } from 'opinionated-telemetry'
+
+// Inside any active span — attributes will appear on every span in this trace
+setTraceContext({ 'user.id': userId, 'user.role': 'admin' })
+```
+
+### `getRootSpan()`
+
+Returns the root span of the active trace from anywhere in the call stack. The OTel API only provides `trace.getActiveSpan()` which returns the _current_ span — there's no built-in way to reach the root from a child context.
+
+Use this when you want to set attributes on the root span specifically, rather than on every span in the trace. Common use cases:
+
+- **Post-auth enrichment**: after identifying a user in auth middleware, tag the root request span with user info so it shows up in the top-level trace view
+- **Request-level metadata**: set final response status, resolved route, or feature flags on the root span from deeper in the call stack
+- **Computed summaries**: add a summary attribute to the root after the work is done (e.g. total items processed)
+
+```ts
+import { getRootSpan } from 'opinionated-telemetry'
+
+// In auth middleware, after identifying the user:
+const root = getRootSpan()
+if (root) {
+  root.setAttribute('user.id', userId)
+  root.setAttribute('app.plan', plan)
+}
+```
+
+Returns `undefined` if there is no active span or the root span has already ended.
+
 ### Auto-instrumentation
 
 Auto-instrumentation hooks are opt-in imports, separate from the main entry point:

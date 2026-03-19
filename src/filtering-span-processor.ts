@@ -31,6 +31,7 @@ import type {
 import { SpanImpl } from '@opentelemetry/sdk-trace-base/build/src/Span.js'
 import { OPIN_TEL_INTERNAL, OPIN_TEL_PREFIX } from './constants.js'
 import { hrTimeToMs, arrayStats } from './utils.js'
+import { _registerProvider, _unregisterProvider } from './trace-context.js'
 
 const debug = debugLib('opin_tel:filtering-processor')
 
@@ -236,6 +237,10 @@ export class FilteringSpanProcessor implements SpanProcessor {
   private _conditionalDropFns = new Map<string, ShouldDropFn>()
   private _conditionalDropBuffer = new Map<string, ReadableSpan[]>()
   private _traceCounts = new Map<string, TraceCounts>()
+  private _traceContext = new Map<
+    string,
+    Record<string, import('@opentelemetry/api').AttributeValue>
+  >()
   private _onDroppedSpan:
     | ((
         span: ReadableSpan,
@@ -315,6 +320,25 @@ export class FilteringSpanProcessor implements SpanProcessor {
       )
       this._samplingEvictionInterval.unref()
     }
+    _registerProvider(this)
+  }
+
+  setTraceContext(
+    traceId: string,
+    attrs: Record<string, import('@opentelemetry/api').AttributeValue>,
+  ): void {
+    // Only accept if we're tracking this trace
+    if (!this._rootSpans.has(traceId) && !this._tailBuffer.has(traceId)) return
+    const existing = this._traceContext.get(traceId)
+    if (existing) {
+      Object.assign(existing, attrs)
+    } else {
+      this._traceContext.set(traceId, { ...attrs })
+    }
+  }
+
+  getRootSpan(traceId: string): Span | undefined {
+    return this._rootSpans.get(traceId) as (Span & ReadableSpan) | undefined
   }
 
   onStart(span: Span & ReadableSpan, ctx: Context): void {
@@ -668,6 +692,8 @@ export class FilteringSpanProcessor implements SpanProcessor {
     this._headDecisions.clear()
     this._rescuedTraces.clear()
     this._burstEma.clear()
+    this._traceContext.clear()
+    _unregisterProvider(this)
     if (hadBuffered) {
       return this._wrapped.forceFlush().then(() => this._wrapped.shutdown())
     }
@@ -1084,7 +1110,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       scope: template.instrumentationScope,
       context: ROOT_CONTEXT,
       spanContext,
-      name: `${template.name} (batched)`,
+      name: `${template.name} (aggregated)`,
       kind: template.kind,
       parentSpanContext: template.parentSpanContext,
       links: [],
@@ -1266,6 +1292,16 @@ export class FilteringSpanProcessor implements SpanProcessor {
       )
     }
 
+    // Apply trace-level context attributes (don't overwrite existing)
+    const traceCtx = this._traceContext.get(span.spanContext().traceId)
+    if (traceCtx) {
+      for (const [key, value] of Object.entries(traceCtx)) {
+        if (span.attributes[key] === undefined) {
+          span.setAttribute(key, value)
+        }
+      }
+    }
+
     // Collapse: attribute inheritance and child reparenting
     if (!span.parentSpanContext) {
       const traceId = span.spanContext().traceId
@@ -1309,6 +1345,10 @@ export class FilteringSpanProcessor implements SpanProcessor {
           this._traceCounts.delete(traceId)
         }
         this._droppedSyncSpans.delete(traceId)
+        // Clean up trace context for non-tail mode; tail mode cleans up in _flushTailEntry
+        if (!this._tailBuffer.has(traceId)) {
+          this._traceContext.delete(traceId)
+        }
       }
     } else {
       const parentSpanId = (span as any).parentSpanContext.spanId
@@ -1573,6 +1613,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
         }
       }
       this._incrementTraceCount(traceId, 'sampledTail')
+      this._traceContext.delete(traceId)
       return
     }
     debug(
@@ -1581,10 +1622,20 @@ export class FilteringSpanProcessor implements SpanProcessor {
       entry.spans.length,
       finalRate,
     )
+    // Apply trace context retroactively to tail-buffered spans
+    const flushTraceCtx = this._traceContext.get(traceId)
     for (const buffered of entry.spans) {
+      const isImpl = buffered instanceof SpanImpl
+      if (flushTraceCtx) {
+        if (isImpl) buffered['_ended'] = false
+        for (const [key, value] of Object.entries(flushTraceCtx)) {
+          if (buffered.attributes[key] === undefined) {
+            ;(buffered as Span & ReadableSpan).setAttribute(key, value)
+          }
+        }
+        if (isImpl) buffered['_ended'] = true
+      }
       if (finalRate > 1) {
-        // Reopen span to set attribute
-        const isImpl = buffered instanceof SpanImpl
         this._setSpanAttr(
           buffered as Span & ReadableSpan,
           isImpl,
@@ -1594,6 +1645,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       }
       this._exportSpan(buffered)
     }
+    this._traceContext.delete(traceId)
   }
 
   private _setSpanAttr(
@@ -1692,6 +1744,13 @@ export class FilteringSpanProcessor implements SpanProcessor {
         if (nowMs - state.lastEventMs > maxAge) {
           this._burstEma.delete(key)
         }
+      }
+    }
+
+    // Evict orphaned trace context entries (trace no longer active or tail-buffered)
+    for (const traceId of this._traceContext.keys()) {
+      if (!this._rootSpans.has(traceId) && !this._tailBuffer.has(traceId)) {
+        this._traceContext.delete(traceId)
       }
     }
   }

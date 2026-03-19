@@ -2169,7 +2169,9 @@ describe('FilteringSpanProcessor', () => {
       await shutdown()
 
       const spans = exporter.spans
-      const s3Spans = spans.filter((s) => s.name === 'S3.GetObject (batched)')
+      const s3Spans = spans.filter(
+        (s) => s.name === 'S3.GetObject (aggregated)',
+      )
 
       // Should be 1 aggregate span, not 5
       expect(s3Spans).toHaveLength(1)
@@ -2212,7 +2214,7 @@ describe('FilteringSpanProcessor', () => {
 
       const spans = exporter.spans
       const dbErrorSpans = spans.filter((s) => s.name === 'db.query')
-      const dbAggSpans = spans.filter((s) => s.name === 'db.query (batched)')
+      const dbAggSpans = spans.filter((s) => s.name === 'db.query (aggregated)')
 
       // 1 error span exported individually + 1 aggregate
       expect(dbErrorSpans).toHaveLength(1)
@@ -2313,7 +2315,7 @@ describe('FilteringSpanProcessor', () => {
 
       const spans = exporter.spans
       const dlSpans = spans.filter(
-        (s) => s.name === 'dataloader.load (batched)',
+        (s) => s.name === 'dataloader.load (aggregated)',
       )
 
       expect(dlSpans).toHaveLength(1)
@@ -2411,7 +2413,7 @@ describe('FilteringSpanProcessor', () => {
       const emittedCalls = wrappedOnEnd.mock.calls
       const aggCall = emittedCalls.find(
         ([s]: any) =>
-          s.name === 'batch (batched)' &&
+          s.name === 'batch (aggregated)' &&
           s.attributes?.['opin_tel.agg.count'] !== undefined,
       )
       expect(aggCall).toBeDefined()
@@ -2483,7 +2485,7 @@ describe('FilteringSpanProcessor', () => {
 
       const spans = exporter.spans
       expect(
-        spans.filter((s) => s.name === 'S3.GetObject (batched)'),
+        spans.filter((s) => s.name === 'S3.GetObject (aggregated)'),
       ).toHaveLength(1)
       expect(spans.filter((s) => s.name === 'db.query')).toHaveLength(1)
       expect(
@@ -2684,7 +2686,7 @@ describe('FilteringSpanProcessor', () => {
       await shutdown()
 
       const spans = exporter.spans
-      const rpcSpans = spans.filter((s) => s.name === 'rpc.call (batched)')
+      const rpcSpans = spans.filter((s) => s.name === 'rpc.call (aggregated)')
 
       // Both consumed into aggregate, no individual error span
       expect(rpcSpans).toHaveLength(1)
@@ -2755,7 +2757,7 @@ describe('FilteringSpanProcessor', () => {
       await shutdown()
 
       const dbSpans = exporter.spans.filter(
-        (s) => s.name === 'db.query (batched)',
+        (s) => s.name === 'db.query (aggregated)',
       )
       // All 5 sequential spans should be in 1 aggregate, not 5 separate ones
       expect(dbSpans).toHaveLength(1)
@@ -2785,7 +2787,7 @@ describe('FilteringSpanProcessor', () => {
       await shutdown()
 
       const batchSpans = exporter.spans.filter(
-        (s) => s.name === 'batch.item' || s.name === 'batch.item (batched)',
+        (s) => s.name === 'batch.item' || s.name === 'batch.item (aggregated)',
       )
       // 3 chunks of 3 + 1 remainder of 1 (single-span optimization) = 4 spans
       expect(batchSpans).toHaveLength(4)
@@ -2838,7 +2840,7 @@ describe('FilteringSpanProcessor', () => {
       await shutdown()
 
       const workSpans = exporter.spans.filter(
-        (s) => s.name === 'work' || s.name === 'work (batched)',
+        (s) => s.name === 'work' || s.name === 'work (aggregated)',
       )
       // 2 chunks of 2 + 1 remainder of 1 (single-span optimization) = 3
       expect(workSpans).toHaveLength(3)
@@ -2878,7 +2880,7 @@ describe('FilteringSpanProcessor', () => {
       await shutdown()
 
       const fetchSpans = exporter.spans.filter(
-        (s) => s.name === 'fetch' || s.name === 'fetch (batched)',
+        (s) => s.name === 'fetch' || s.name === 'fetch (aggregated)',
       )
       // 2 chunks of 2 + 1 remainder of 1 (single-span optimization) = 3 spans
       expect(fetchSpans).toHaveLength(3)
@@ -2922,7 +2924,7 @@ describe('FilteringSpanProcessor', () => {
 
       const taskErrorSpans = exporter.spans.filter((s) => s.name === 'task')
       const taskAggSpans = exporter.spans.filter(
-        (s) => s.name === 'task (batched)',
+        (s) => s.name === 'task (aggregated)',
       )
       // 1 individual error + 1 aggregate
       expect(taskErrorSpans).toHaveLength(1)
