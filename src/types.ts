@@ -9,6 +9,8 @@ import type {
 import type { Instrumentation } from '@opentelemetry/instrumentation'
 import type { FilteringSpanProcessorConfig } from './filtering-span-processor.js'
 import type { NodeRuntimeMetricsConfig } from './node-runtime-metrics.js'
+import type { MetricPattern } from './filtering-metric-exporter.js'
+import type { PushMetricExporter } from '@opentelemetry/sdk-metrics'
 import type { NodeSDKConfiguration } from '@opentelemetry/sdk-node'
 
 export interface TraceSummary {
@@ -144,6 +146,28 @@ export interface OpinionatedTelemetryConfig
    * Default: true
    */
   processorMetrics?: boolean
+  /**
+   * Shorthand for metric pipeline setup. Provide a metric exporter and we create
+   * the PeriodicExportingMetricReader for you. Mutually exclusive with `metricReaders`.
+   *
+   * When combined with `metricFilter`, the exporter is automatically wrapped
+   * with `FilteringMetricExporter` for regex/predicate/allow patterns.
+   */
+  metricExporter?: PushMetricExporter
+  /** Export interval for `metricExporter` in ms. Default: 60_000 */
+  metricExportInterval?: number
+  /**
+   * Filter metrics by name. String glob patterns in `drop` always generate efficient
+   * DROP Views (zero collection overhead). RegExp, predicates, and `allow` require
+   * `metricExporter` (not `metricReaders`) for automatic wrapping — or use
+   * `FilteringMetricExporter` directly in your reader.
+   */
+  metricFilter?: {
+    /** Metrics matching any pattern are excluded. Strings use glob matching (`*` wildcard). */
+    drop?: MetricPattern[]
+    /** Only metrics matching at least one pattern are kept. Applied before drop. */
+    allow?: MetricPattern[]
+  }
 }
 
 export type AggregateGenericOption = 'uniq'

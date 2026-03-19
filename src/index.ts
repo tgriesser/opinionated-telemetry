@@ -1,5 +1,11 @@
 export { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto'
-export { trace, context, propagation } from '@opentelemetry/api'
+export {
+  trace,
+  context,
+  propagation,
+  SpanStatusCode,
+  SpanKind,
+} from '@opentelemetry/api'
 
 export type { SpanExporter, BufferConfig } from '@opentelemetry/sdk-trace-base'
 export { opinionatedTelemetryInit } from './opinionated-telemetry-init.js'

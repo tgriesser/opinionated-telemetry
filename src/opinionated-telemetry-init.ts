@@ -7,6 +7,7 @@ import {
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base'
 import { metrics, trace } from '@opentelemetry/api'
+import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics'
 import { NodeRuntimeMetrics } from './node-runtime-metrics.js'
 import {
   CompositePropagator,
@@ -14,6 +15,10 @@ import {
 } from '@opentelemetry/core'
 import { FilteringSpanProcessor } from './filtering-span-processor.js'
 import { FilteredBaggagePropagator } from './filtered-baggage-propagator.js'
+import {
+  FilteringMetricExporter,
+  dropMetrics,
+} from './filtering-metric-exporter.js'
 import type { OpinionatedTelemetryConfig } from './types.js'
 
 /** Opinionated BatchSpanProcessor defaults: flush more frequently, shorter timeout */
@@ -40,6 +45,9 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     resourceAttributes = {},
     traceExporter,
     metricReaders,
+    metricExporter,
+    metricExportInterval,
+    metricFilter,
     resourceDetectors,
     spanLimits = DEFAULT_SPAN_LIMITS,
     shutdownSignal = 'SIGTERM',
@@ -49,7 +57,7 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     baggagePropagation,
     processorMetrics,
     runtimeMetrics: runtimeMetricsConfig,
-    views,
+    views: userViews,
     ...processorConfig
   } = config
 
@@ -99,6 +107,60 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     ],
   })
 
+  // ── Metric pipeline ──
+  if (metricExporter && metricReaders) {
+    throw new Error(
+      '[opin_tel] Cannot use both metricExporter and metricReaders. ' +
+        'Use metricExporter for the simple path, or metricReaders for full control.',
+    )
+  }
+
+  let views = userViews
+  let finalMetricReaders = metricReaders
+
+  if (metricFilter) {
+    // String drop patterns → DROP views (zero collection overhead, works with any reader)
+    const stringDrops = (metricFilter.drop ?? []).filter(
+      (p): p is string => typeof p === 'string',
+    )
+    if (stringDrops.length) {
+      views = [...(views ?? []), ...dropMetrics(...stringDrops)]
+    }
+
+    // Regex/predicate/allow needs exporter wrapping — only possible with metricExporter
+    const needsExporterFilter =
+      (metricFilter.allow?.length ?? 0) > 0 ||
+      metricFilter.drop?.some((p) => typeof p !== 'string')
+
+    if (needsExporterFilter && !metricExporter) {
+      logger.warn(
+        '[opin_tel] metricFilter with RegExp/predicate patterns or allow requires metricExporter. ' +
+          'String drop patterns have been applied as Views. Use metricExporter for full filtering.',
+      )
+    }
+  }
+
+  if (metricExporter) {
+    const needsExporterFilter =
+      (metricFilter?.allow?.length ?? 0) > 0 ||
+      metricFilter?.drop?.some((p) => typeof p !== 'string')
+
+    const exporter = needsExporterFilter
+      ? new FilteringMetricExporter({
+          exporter: metricExporter,
+          drop: metricFilter?.drop,
+          allow: metricFilter?.allow,
+        })
+      : metricExporter
+
+    finalMetricReaders = [
+      new PeriodicExportingMetricReader({
+        exporter,
+        exportIntervalMillis: metricExportInterval ?? 60_000,
+      }),
+    ]
+  }
+
   const sdk = new NodeSDK({
     resource: resourceFromAttributes({
       [ATTR_SERVICE_NAME]: serviceName,
@@ -108,7 +170,7 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     spanLimits,
     spanProcessors,
     textMapPropagator,
-    metricReaders,
+    metricReaders: finalMetricReaders,
     instrumentations,
     views,
   })

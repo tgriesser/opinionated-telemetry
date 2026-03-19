@@ -1,8 +1,7 @@
 import fs from 'fs'
 import path from 'path'
-import { honeycombInit } from 'opinionated-telemetry/honeycomb'
+import { honeycombInit, SpanStatusCode } from 'opinionated-telemetry/honeycomb'
 import { otelInitKnex } from 'opinionated-telemetry/integrations/knex'
-import { SpanStatusCode } from 'opinionated-telemetry/opentelemetry-api'
 import { createAutoInstrumentHookCJS } from 'opinionated-telemetry/auto-instrument'
 import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node'
 

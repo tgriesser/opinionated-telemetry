@@ -25,6 +25,7 @@ Best suited for & meant use with [Honeycomb.io](https://www.honeycomb.io/). Virt
 - **Span aggregation**: collapses N parallel sibling spans with the same name (dataloader batches, S3 multi-get, parallel DB queries) into a single aggregate span with summary statistics, while preserving individual error spans. Configurable via per-scope options or a root-level predicate, with optional custom attribute stats (min, max, avg, median, uniq, etc.)
 - **Flat metric exporter**: [opt-in exporter](#flat-metric-exporter) that wraps your metric exporter to fold dimensional attributes into metric names and expand histograms into summary stats + percentiles — so Honeycomb merges everything into a single wide event per collection cycle.
 - **Node runtime metrics**: [focused runtime health metrics](#node-runtime-metrics) (event loop delay, heap, GC, CPU, handles, memory) using built-in Node.js APIs — replaces noisy `@opentelemetry/host-metrics` and `instrumentation-runtime-node` with 18 actionable gauges and zero attributes.
+- **Metric filtering**: [drop/allow metrics](#metric-filtering) by name using glob patterns, regex, or predicates — cut metric noise and cost without learning the OTel Views API
 - **Integration helpers**: knex, graphql, bull, socket.io, express
 - **Event loop utilization**: captures event loop utilization (0-1) on all spans. Useful for alerting on situation where expensive spans are blocking the event loop. Particularly useful when dealing with things that are synchronous, like `fs` calls or `better-sqlite3` queries
 
@@ -95,6 +96,9 @@ opinionatedTelemetryInit({
   baggagePropagation?: BaggagePropagationConfig, // default: suppress all outbound
   runtimeMetrics?: NodeRuntimeMetricsConfig | false, // default: enabled
   processorMetrics?: boolean,                    // default: true — see docs/PROCESSOR_METRICS.md
+  metricExporter?: PushMetricExporter,           // shorthand: we create the MetricReader for you
+  metricExportInterval?: number,                 // default: 60_000 (used with metricExporter)
+  metricFilter?: { drop?: MetricPattern[], allow?: MetricPattern[] }, // see Metric Filtering
   logger?: OpinionatedLogger,                    // default: console
 })
 ```
@@ -810,6 +814,93 @@ opinionatedTelemetryInit({
 Metrics include interval watermarks (current + max + min since last observation) for active spans and traces, snapshot gauges for stuck spans and aggregate groups, and per-interval throughput counters that reset on each collection.
 
 See [docs/PROCESSOR_METRICS.md](docs/PROCESSOR_METRICS.md) for the full metric reference.
+
+## Metric Filtering
+
+OTel's `View` API is the standard way to drop metrics, but it's verbose and limited to glob wildcards. `opinionated-telemetry` provides two simpler approaches that can be used independently or together.
+
+### Quick: `metricFilter` config
+
+The simplest path — provide `metricExporter` instead of `metricReaders` and add a `metricFilter`:
+
+```ts
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-proto'
+
+opinionatedTelemetryInit({
+  serviceName: 'my-service',
+  traceExporter: new OTLPTraceExporter(),
+  instrumentations: [new HttpInstrumentation()],
+  metricExporter: new OTLPMetricExporter({
+    url: 'https://api.honeycomb.io:443/v1/metrics',
+    headers: { 'x-honeycomb-team': process.env.HONEYCOMB_API_KEY },
+  }),
+  metricFilter: {
+    drop: [
+      'http.server.*', // glob pattern
+      /^node\.gc/, // regex
+      (name) => name.endsWith('.p99'), // predicate
+    ],
+    // OR allowlist — only matching metrics are kept:
+    allow: ['opin_tel.*', 'node.heap.*', 'node.cpu.*'],
+  },
+})
+```
+
+`metricExporter` is a shorthand that creates the `PeriodicExportingMetricReader` for you. Use `metricExportInterval` to override the default 60s interval. Mutually exclusive with `metricReaders`.
+
+**Pattern types** (`MetricPattern = string | RegExp | ((name: string) => boolean)`):
+
+| Type          | Example                           | Behavior                                |
+| ------------- | --------------------------------- | --------------------------------------- |
+| String (glob) | `'http.server.*'`                 | `*` matches any sequence of characters  |
+| RegExp        | `/^node\.gc/`                     | Standard regex test against metric name |
+| Predicate     | `(name) => name.endsWith('.p99')` | Return `true` to match                  |
+
+**`drop` vs `allow`:**
+
+- `drop` — metrics matching **any** pattern are excluded
+- `allow` — **only** metrics matching at least one pattern are kept
+- Both can be combined: `allow` filters first, then `drop` removes from the allowed set
+
+> **How it works:** String glob patterns in `drop` generate efficient DROP Views (metrics are never collected — zero overhead). Regex, predicates, and `allow` patterns are applied at the exporter level via `FilteringMetricExporter`, which requires `metricExporter` for automatic wiring.
+
+### Standalone: `dropMetrics()` helper
+
+If you use `metricReaders` directly and just need to drop a few metrics, `dropMetrics()` generates `ViewOptions[]` with DROP aggregation:
+
+```ts
+import { dropMetrics } from 'opinionated-telemetry/metrics'
+
+opinionatedTelemetryInit({
+  metricReaders: [myReader],
+  views: [
+    ...dropMetrics('http.server.*', 'http.client.*', 'node.gc.*'),
+    ...flatMetricExporterViews,
+  ],
+})
+```
+
+This is the most efficient approach (zero collection overhead) but only supports string glob patterns.
+
+### Standalone: `FilteringMetricExporter`
+
+For full control, wrap any `PushMetricExporter` with `FilteringMetricExporter`. Supports all pattern types and both `drop`/`allow`:
+
+```ts
+import {
+  FilteringMetricExporter,
+  FlatMetricExporter,
+} from 'opinionated-telemetry/metrics'
+import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics'
+
+const reader = new PeriodicExportingMetricReader({
+  exporter: new FilteringMetricExporter({
+    exporter: new FlatMetricExporter({ exporter: otlpExporter }),
+    drop: [/^node\.gc/],
+    allow: ['opin_tel.*', 'node.heap.*', 'node.cpu.*'],
+  }),
+})
+```
 
 ## Sampling
 
