@@ -9,10 +9,6 @@ import {
   FlatMetricExporter,
   flatMetricExporterViews,
 } from './flat-metric-exporter.js'
-import {
-  NodeRuntimeMetrics,
-  type NodeRuntimeMetricsConfig,
-} from './node-runtime-metrics.js'
 import type { OpinionatedTelemetryConfig } from './types.js'
 import type { SpanExporter } from '@opentelemetry/sdk-trace-base'
 
@@ -25,8 +21,6 @@ export interface HoneycombInitOpinionatedTelemetryConfig extends Omit<
   metricExportInterval?: number
   metricExporter?: PushMetricExporter
   traceExporter?: SpanExporter
-  /** Configure runtime metrics collection. Set to false to disable. Default: enabled when metrics are enabled. */
-  runtimeMetrics?: NodeRuntimeMetricsConfig | false
 }
 
 export * from './index.js'
@@ -36,7 +30,6 @@ export function honeycombInit(config: HoneycombInitOpinionatedTelemetryConfig) {
     apiKey,
     metricExportInterval = 60_000,
     enableMetricCollection,
-    runtimeMetrics: runtimeMetricsConfig,
     ...rest
   } = config
 
@@ -58,14 +51,10 @@ export function honeycombInit(config: HoneycombInitOpinionatedTelemetryConfig) {
           exportIntervalMillis: metricExportInterval,
         })
 
-  let runtimeMetrics: NodeRuntimeMetrics | undefined
-  if (enableMetricCollection !== false && runtimeMetricsConfig !== false) {
-    runtimeMetrics = new NodeRuntimeMetrics(runtimeMetricsConfig ?? {})
-    runtimeMetrics.start()
-  }
-
-  const result = opinionatedTelemetryInit({
+  return opinionatedTelemetryInit({
     ...rest,
+    runtimeMetrics:
+      enableMetricCollection === false ? false : rest.runtimeMetrics,
     traceExporter:
       config.traceExporter ??
       new OTLPTraceExporter({
@@ -78,6 +67,4 @@ export function honeycombInit(config: HoneycombInitOpinionatedTelemetryConfig) {
     metricReaders: metricReader ? [metricReader] : [],
     views: metricReader ? flatMetricExporterViews : [],
   })
-
-  return { ...result, runtimeMetrics }
 }

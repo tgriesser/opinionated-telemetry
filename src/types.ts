@@ -8,6 +8,7 @@ import type {
 } from '@opentelemetry/sdk-trace-base'
 import type { Instrumentation } from '@opentelemetry/instrumentation'
 import type { FilteringSpanProcessorConfig } from './filtering-span-processor.js'
+import type { NodeRuntimeMetricsConfig } from './node-runtime-metrics.js'
 import type { NodeSDKConfiguration } from '@opentelemetry/sdk-node'
 
 export interface TraceSummary {
@@ -131,6 +132,12 @@ export interface OpinionatedTelemetryConfig
    * Default: suppresses all outbound baggage injection (extract/inbound still works).
    */
   baggagePropagation?: BaggagePropagationConfig
+  /**
+   * Configure runtime metrics collection (event loop, heap, GC, CPU, handles, memory).
+   * Set to false to disable. Pass a config object to customize.
+   * Default: enabled with default settings.
+   */
+  runtimeMetrics?: NodeRuntimeMetricsConfig | false
 }
 
 export type AggregateGenericOption = 'uniq'

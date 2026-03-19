@@ -7,6 +7,7 @@ import {
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base'
 import { trace } from '@opentelemetry/api'
+import { NodeRuntimeMetrics } from './node-runtime-metrics.js'
 import {
   CompositePropagator,
   W3CTraceContextPropagator,
@@ -46,6 +47,7 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     additionalSpanProcessors = [],
     batchProcessorConfig,
     baggagePropagation,
+    runtimeMetrics: runtimeMetricsConfig,
     views,
     ...processorConfig
   } = config
@@ -118,8 +120,23 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     processorConfig.baggageToAttributes ?? true,
   )
 
-  const shutdown = () =>
-    sdk.shutdown().catch((err) => console.error('OTel SDK shutdown error', err))
+  // Start runtime metrics AFTER sdk.start() so metrics.getMeter() returns
+  // a real meter — the OTel metrics API has no proxy pattern, so getMeter()
+  // before the global MeterProvider is registered returns a NoopMeter.
+  let runtimeMetrics: NodeRuntimeMetrics | undefined
+  if (runtimeMetricsConfig !== false) {
+    runtimeMetrics = new NodeRuntimeMetrics(
+      typeof runtimeMetricsConfig === 'object' ? runtimeMetricsConfig : {},
+    )
+    runtimeMetrics.start()
+  }
+
+  const shutdown = () => {
+    runtimeMetrics?.stop()
+    return sdk
+      .shutdown()
+      .catch((err) => console.error('OTel SDK shutdown error', err))
+  }
 
   if (shutdownSignal) {
     debug('registering shutdown on %s', shutdownSignal)
@@ -128,6 +145,7 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
 
   return {
     sdk,
+    runtimeMetrics,
     getTracer: (name = serviceName) => trace.getTracer(name),
     shutdown,
   }

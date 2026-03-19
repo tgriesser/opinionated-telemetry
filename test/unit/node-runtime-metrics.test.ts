@@ -271,4 +271,62 @@ describe('NodeRuntimeMetrics', () => {
 
     rtm.stop()
   })
+
+  it('produces no metrics when started before global MeterProvider is registered', async () => {
+    // Tear down the provider registered in beforeEach so we start clean
+    metrics.disable()
+    await cleanup.provider.shutdown()
+
+    // Start runtime metrics BEFORE any MeterProvider is registered globally —
+    // metrics.getMeter() returns a NoopMeter, so nothing is collected
+    const rtm = new NodeRuntimeMetrics({
+      enable: { eventLoopDelay: false, gc: false, cpu: false },
+    })
+    rtm.start()
+
+    // Now register the real provider (simulating the ordering bug)
+    cleanup = createTestMeterProvider()
+    provider = cleanup.provider
+
+    const resourceMetrics = await cleanup.collectAndGetMetrics()
+    const metricNames = new Set<string>()
+    for (const rm of resourceMetrics) {
+      for (const sm of rm.scopeMetrics) {
+        for (const m of sm.metrics) {
+          metricNames.add(m.descriptor.name)
+        }
+      }
+    }
+
+    // The gauges were registered on a NoopMeter — nothing shows up
+    expect(metricNames.size).toBe(0)
+
+    rtm.stop()
+  })
+
+  it('produces metrics when started after global MeterProvider is registered', async () => {
+    // cleanup.provider is already registered globally from beforeEach
+    const rtm = new NodeRuntimeMetrics({
+      enable: { eventLoopDelay: false, gc: false, cpu: false },
+    })
+    rtm.start()
+
+    const resourceMetrics = await cleanup.collectAndGetMetrics()
+    const metricNames = new Set<string>()
+    for (const rm of resourceMetrics) {
+      for (const sm of rm.scopeMetrics) {
+        for (const m of sm.metrics) {
+          metricNames.add(m.descriptor.name)
+        }
+      }
+    }
+
+    // heap (3) + handles/requests (2) + memory (3) = 8
+    expect(metricNames.size).toBe(8)
+    expect(metricNames).toContain('node.heap.used_mb')
+    expect(metricNames).toContain('node.handles')
+    expect(metricNames).toContain('node.memory.rss_mb')
+
+    rtm.stop()
+  })
 })
