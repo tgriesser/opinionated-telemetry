@@ -8,6 +8,7 @@ import {
   ROOT_CONTEXT,
   propagation,
   SpanStatusCode,
+  type Meter,
   type SpanContext,
 } from '@opentelemetry/api'
 import { randomBytes } from 'node:crypto'
@@ -250,6 +251,29 @@ export class FilteringSpanProcessor implements SpanProcessor {
     | null = null
   private _logger: OpinionatedLogger
 
+  // ── Interval tracking for processor meta metrics ──
+  // Watermarks (reset to current on observation)
+  private _iActiveSpansMax = 0
+  private _iActiveSpansMin = 0
+  private _iActiveTracesMax = 0
+  private _iActiveTracesMin = 0
+  private _iTailTracesMax = 0
+  private _iTailTracesMin = 0
+  private _iTailSpansMax = 0
+  private _iTailSpansMin = 0
+  // Running counter for total spans across all tail buffer entries
+  private _tailBufferSpanCount = 0
+  // Throughput counters (reset to 0 on observation)
+  private _iSpansStarted = 0
+  private _iSpansExported = 0
+  private _iDroppedSync = 0
+  private _iDroppedConditional = 0
+  private _iDroppedAggregated = 0
+  private _iDroppedHead = 0
+  private _iDroppedTail = 0
+  private _iDroppedBurst = 0
+  private _iDroppedStuck = 0
+
   constructor(wrapped: SpanProcessor, config?: FilteringSpanProcessorConfig) {
     this._wrapped = wrapped
     this._config = {
@@ -349,6 +373,9 @@ export class FilteringSpanProcessor implements SpanProcessor {
     this._allSpans.add(span)
     this._activeSpanIds.add(spanId)
     this._incrementTraceCount(traceId, 'started')
+    this._iSpansStarted++
+    const activeCount = this._allSpans.size
+    if (activeCount > this._iActiveSpansMax) this._iActiveSpansMax = activeCount
 
     // Track tick for sync span detection
     if (this._config.dropSyncSpans) {
@@ -372,6 +399,9 @@ export class FilteringSpanProcessor implements SpanProcessor {
     if (!span.parentSpanContext) {
       if (!this._rootSpans.has(traceId)) {
         this._rootSpans.set(traceId, span)
+        const traceCount = this._rootSpans.size
+        if (traceCount > this._iActiveTracesMax)
+          this._iActiveTracesMax = traceCount
         if (this._memoryUse) {
           this._captureMemoryOnSpan(span)
         }
@@ -399,6 +429,8 @@ export class FilteringSpanProcessor implements SpanProcessor {
             flushed: false,
             decidedRate: 1,
           })
+          const tailSize = this._tailBuffer.size
+          if (tailSize > this._iTailTracesMax) this._iTailTracesMax = tailSize
           this._evictOldestTailEntry()
         }
       } else {
@@ -516,6 +548,8 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
     this._allSpans.delete(span as Span)
     this._activeSpanIds.delete(spanId)
+    const activeCount = this._allSpans.size
+    if (activeCount < this._iActiveSpansMin) this._iActiveSpansMin = activeCount
     const stuckEntry = this._reportedStuckSpans.get(spanId)
     const wasReportedStuck = stuckEntry != null
     this._reportedStuckSpans.delete(spanId)
@@ -537,6 +571,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
         traceDropped.set(spanId, span.parentSpanContext)
         this._onDroppedSpan?.(span, 'sync')
         this._incrementTraceCount(traceId, 'droppedSync')
+        this._iDroppedSync++
         // Clean up any shouldDrop/collapse state for this sync-dropped span
         this._collapseSpans.delete(spanId)
         this._cleanupConditionalDrop(spanId, span)
@@ -689,6 +724,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     }
     const hadBuffered = this._tailBuffer.size > 0
     this._tailBuffer.clear()
+    this._tailBufferSpanCount = 0
     this._headDecisions.clear()
     this._rescuedTraces.clear()
     this._burstEma.clear()
@@ -702,6 +738,172 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
   forceFlush(): Promise<void> {
     return this._wrapped.forceFlush()
+  }
+
+  /**
+   * Register observable metrics that expose processor internal state.
+   * Call after the MeterProvider is registered (i.e., after sdk.start()).
+   */
+  registerMetrics(meter: Meter): void {
+    const prefix = 'opin_tel.processor'
+
+    // ── Gauges with interval watermarks ──
+    const activeSpans = meter.createObservableGauge(`${prefix}.spans.active`)
+    const activeSpansMax = meter.createObservableGauge(
+      `${prefix}.spans.active.max`,
+    )
+    const activeSpansMin = meter.createObservableGauge(
+      `${prefix}.spans.active.min`,
+    )
+    const activeTraces = meter.createObservableGauge(`${prefix}.traces.active`)
+    const activeTracesMax = meter.createObservableGauge(
+      `${prefix}.traces.active.max`,
+    )
+    const activeTracesMin = meter.createObservableGauge(
+      `${prefix}.traces.active.min`,
+    )
+    const tailTraces = meter.createObservableGauge(
+      `${prefix}.tail_buffer.traces`,
+    )
+    const tailTracesMax = meter.createObservableGauge(
+      `${prefix}.tail_buffer.traces.max`,
+    )
+    const tailTracesMin = meter.createObservableGauge(
+      `${prefix}.tail_buffer.traces.min`,
+    )
+    const tailSpans = meter.createObservableGauge(`${prefix}.tail_buffer.spans`)
+    const tailSpansMax = meter.createObservableGauge(
+      `${prefix}.tail_buffer.spans.max`,
+    )
+    const tailSpansMin = meter.createObservableGauge(
+      `${prefix}.tail_buffer.spans.min`,
+    )
+
+    // ── Simple gauges (snapshot only) ──
+    const stuckSpans = meter.createObservableGauge(`${prefix}.stuck_spans`)
+    const aggregateGroups = meter.createObservableGauge(
+      `${prefix}.aggregate_groups`,
+    )
+    const conditionalDropBuffers = meter.createObservableGauge(
+      `${prefix}.conditional_drop_buffers`,
+    )
+
+    // ── Interval throughput counters ──
+    const spansStarted = meter.createObservableGauge(`${prefix}.spans.started`)
+    const spansExported = meter.createObservableGauge(
+      `${prefix}.spans.exported`,
+    )
+    const droppedSync = meter.createObservableGauge(
+      `${prefix}.spans.dropped.sync`,
+    )
+    const droppedConditional = meter.createObservableGauge(
+      `${prefix}.spans.dropped.conditional`,
+    )
+    const droppedAggregated = meter.createObservableGauge(
+      `${prefix}.spans.dropped.aggregated`,
+    )
+    const droppedHead = meter.createObservableGauge(
+      `${prefix}.spans.dropped.head`,
+    )
+    const droppedTail = meter.createObservableGauge(
+      `${prefix}.spans.dropped.tail`,
+    )
+    const droppedBurst = meter.createObservableGauge(
+      `${prefix}.spans.dropped.burst`,
+    )
+    const droppedStuck = meter.createObservableGauge(
+      `${prefix}.spans.dropped.stuck`,
+    )
+
+    meter.addBatchObservableCallback(
+      (observer) => {
+        // Current gauges
+        const curActiveSpans = this._allSpans.size
+        const curActiveTraces = this._rootSpans.size
+        const curTailTraces = this._tailBuffer.size
+        const curTailSpans = this._tailBufferSpanCount
+
+        // Watermark gauges
+        observer.observe(activeSpans, curActiveSpans)
+        observer.observe(activeSpansMax, this._iActiveSpansMax)
+        observer.observe(activeSpansMin, this._iActiveSpansMin)
+        observer.observe(activeTraces, curActiveTraces)
+        observer.observe(activeTracesMax, this._iActiveTracesMax)
+        observer.observe(activeTracesMin, this._iActiveTracesMin)
+        observer.observe(tailTraces, curTailTraces)
+        observer.observe(tailTracesMax, this._iTailTracesMax)
+        observer.observe(tailTracesMin, this._iTailTracesMin)
+        observer.observe(tailSpans, curTailSpans)
+        observer.observe(tailSpansMax, this._iTailSpansMax)
+        observer.observe(tailSpansMin, this._iTailSpansMin)
+
+        // Reset watermarks to current
+        this._iActiveSpansMax = curActiveSpans
+        this._iActiveSpansMin = curActiveSpans
+        this._iActiveTracesMax = curActiveTraces
+        this._iActiveTracesMin = curActiveTraces
+        this._iTailTracesMax = curTailTraces
+        this._iTailTracesMin = curTailTraces
+        this._iTailSpansMax = curTailSpans
+        this._iTailSpansMin = curTailSpans
+
+        // Snapshot gauges
+        observer.observe(stuckSpans, this._reportedStuckSpans.size)
+        observer.observe(aggregateGroups, this._aggregateGroups.size)
+        observer.observe(
+          conditionalDropBuffers,
+          this._conditionalDropBuffer.size,
+        )
+
+        // Throughput counters
+        observer.observe(spansStarted, this._iSpansStarted)
+        observer.observe(spansExported, this._iSpansExported)
+        observer.observe(droppedSync, this._iDroppedSync)
+        observer.observe(droppedConditional, this._iDroppedConditional)
+        observer.observe(droppedAggregated, this._iDroppedAggregated)
+        observer.observe(droppedHead, this._iDroppedHead)
+        observer.observe(droppedTail, this._iDroppedTail)
+        observer.observe(droppedBurst, this._iDroppedBurst)
+        observer.observe(droppedStuck, this._iDroppedStuck)
+
+        // Reset interval counters
+        this._iSpansStarted = 0
+        this._iSpansExported = 0
+        this._iDroppedSync = 0
+        this._iDroppedConditional = 0
+        this._iDroppedAggregated = 0
+        this._iDroppedHead = 0
+        this._iDroppedTail = 0
+        this._iDroppedBurst = 0
+        this._iDroppedStuck = 0
+      },
+      [
+        activeSpans,
+        activeSpansMax,
+        activeSpansMin,
+        activeTraces,
+        activeTracesMax,
+        activeTracesMin,
+        tailTraces,
+        tailTracesMax,
+        tailTracesMin,
+        tailSpans,
+        tailSpansMax,
+        tailSpansMin,
+        stuckSpans,
+        aggregateGroups,
+        conditionalDropBuffers,
+        spansStarted,
+        spansExported,
+        droppedSync,
+        droppedConditional,
+        droppedAggregated,
+        droppedHead,
+        droppedTail,
+        droppedBurst,
+        droppedStuck,
+      ],
+    )
   }
 
   private _applyOnStartResult(
@@ -803,6 +1005,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
     this._onDroppedSpan?.(span, 'conditional', durationMs)
     this._incrementTraceCount(spanCtx.traceId, 'droppedConditional')
+    this._iDroppedConditional++
     debug('dropping conditional span: %s', span.name)
     return true
   }
@@ -879,6 +1082,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
   private _exportSpan(span: ReadableSpan): void {
     this._incrementTraceCount(span.spanContext().traceId, 'captured')
+    this._iSpansExported++
     this._wrapped.onEnd(span)
   }
 
@@ -986,6 +1190,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     if (isError && keepErrors) return false
     // Everything else is consumed by aggregation
     this._incrementTraceCount(span.spanContext().traceId, 'droppedAggregated')
+    this._iDroppedAggregated++
     return true
   }
 
@@ -1174,6 +1379,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       if (stuckResult === 'drop') {
         this._evictStuckSpan(span, spanId)
         this._onDroppedSpan?.(readable, 'stuck', durationMs)
+        this._iDroppedStuck++
         continue
       }
 
@@ -1307,6 +1513,9 @@ export class FilteringSpanProcessor implements SpanProcessor {
       const traceId = span.spanContext().traceId
       if (!span.attributes[OPIN_TEL_INTERNAL.stuck.isSnapshot]) {
         this._rootSpans.delete(traceId)
+        const traceCount = this._rootSpans.size
+        if (traceCount < this._iActiveTracesMin)
+          this._iActiveTracesMin = traceCount
         // Write captured/drop/sampled counts to root span
         const counts = this._traceCounts.get(traceId)
         if (counts) {
@@ -1421,6 +1630,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
             )
             this._onDroppedSpan?.(span, 'tail', this._spanDurationMs(span))
             this._incrementTraceCount(traceId, 'sampledTail')
+            this._iDroppedTail++
             return
           }
           this._setSpanAttr(span, isSpanImpl, 'SampleRate', finalRate)
@@ -1437,6 +1647,9 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
       // Buffer the span
       tailEntry.spans.push(span)
+      this._tailBufferSpanCount++
+      if (this._tailBufferSpanCount > this._iTailSpansMax)
+        this._iTailSpansMax = this._tailBufferSpanCount
 
       const tail = this._sampling?.tail
       // mustKeepSpan: sets flag but does NOT flush
@@ -1533,6 +1746,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
         )
         this._onDroppedSpan?.(span, 'head')
         this._incrementTraceCount(traceId, 'sampledHead')
+        this._iDroppedHead++
         return
       }
 
@@ -1557,6 +1771,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
         )
         this._onDroppedSpan?.(span, 'burst', this._spanDurationMs(span))
         this._incrementTraceCount(traceId, 'sampledBurst')
+        this._iDroppedBurst++
         return
       }
       this._setSpanAttr(span, isSpanImpl, 'SampleRate', burstRate)
@@ -1599,6 +1814,11 @@ export class FilteringSpanProcessor implements SpanProcessor {
     entry: TailBufferEntry,
     burstRate = 1,
   ): void {
+    // Spans are leaving the tail buffer regardless of drop/export
+    this._tailBufferSpanCount -= entry.spans.length
+    if (this._tailBufferSpanCount < this._iTailSpansMin)
+      this._iTailSpansMin = this._tailBufferSpanCount
+
     const finalRate = entry.decidedRate * burstRate
     if (finalRate > 1 && !shouldKeep(traceId, finalRate)) {
       debug(
@@ -1612,6 +1832,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
           this._onDroppedSpan(buffered, 'tail', this._spanDurationMs(buffered))
         }
       }
+      this._iDroppedTail += entry.spans.length
       this._incrementTraceCount(traceId, 'sampledTail')
       this._traceContext.delete(traceId)
       return
@@ -1683,6 +1904,8 @@ export class FilteringSpanProcessor implements SpanProcessor {
         this._flushTailEntry(oldTraceId, oldEntry)
       }
       this._tailBuffer.delete(oldTraceId)
+      const tailSize = this._tailBuffer.size
+      if (tailSize < this._iTailTracesMin) this._iTailTracesMin = tailSize
     }
   }
 
@@ -1697,6 +1920,8 @@ export class FilteringSpanProcessor implements SpanProcessor {
         const age = nowMs - entry.createdAt
         if (entry.flushed && age > graceMs) {
           this._tailBuffer.delete(traceId)
+          const tailSize = this._tailBuffer.size
+          if (tailSize < this._iTailTracesMin) this._iTailTracesMin = tailSize
         } else if (!entry.flushed && age > maxAgeMs) {
           // Timed out — flush with head rate
           entry.decidedRate = entry.mustKeep ? 1 : entry.headSampleRate

@@ -93,6 +93,8 @@ opinionatedTelemetryInit({
   additionalSpanProcessors?: SpanProcessor[],
   batchProcessorConfig?: BufferConfig | false,    // false disables batching
   baggagePropagation?: BaggagePropagationConfig, // default: suppress all outbound
+  runtimeMetrics?: NodeRuntimeMetricsConfig | false, // default: enabled
+  processorMetrics?: boolean,                    // default: true — see docs/PROCESSOR_METRICS.md
   logger?: OpinionatedLogger,                    // default: console
 })
 ```
@@ -792,6 +794,22 @@ rtm.stop() // idempotent — disconnects observers, disables histogram
 All metrics are observable gauges with zero attributes, so they merge cleanly into a single wide event when using `FlatMetricExporter` with Honeycomb.
 
 Event loop and GC stats are reset after each observation, giving you per-interval measurements. CPU percentages are computed as deltas between observations.
+
+## Processor Diagnostic Metrics
+
+The `FilteringSpanProcessor` exposes its internal state as OTel metrics — active spans, active traces, tail buffer depth, throughput counters, and drop breakdowns. These help detect span leaks, understand throughput, and monitor pipeline health.
+
+Enabled by default. Set `processorMetrics: false` to disable.
+
+```ts
+opinionatedTelemetryInit({
+  processorMetrics: false, // disable if not needed
+})
+```
+
+Metrics include interval watermarks (current + max + min since last observation) for active spans and traces, snapshot gauges for stuck spans and aggregate groups, and per-interval throughput counters that reset on each collection.
+
+See [docs/PROCESSOR_METRICS.md](docs/PROCESSOR_METRICS.md) for the full metric reference.
 
 ## Sampling
 

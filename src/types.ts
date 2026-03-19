@@ -138,6 +138,12 @@ export interface OpinionatedTelemetryConfig
    * Default: enabled with default settings.
    */
   runtimeMetrics?: NodeRuntimeMetricsConfig | false
+  /**
+   * Expose processor diagnostic metrics (active spans, traces, tail buffer depth,
+   * throughput counters, drop reasons). Set to false to disable.
+   * Default: true
+   */
+  processorMetrics?: boolean
 }
 
 export type AggregateGenericOption = 'uniq'

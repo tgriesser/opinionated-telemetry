@@ -6,7 +6,7 @@ import {
   BatchSpanProcessor,
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base'
-import { trace } from '@opentelemetry/api'
+import { metrics, trace } from '@opentelemetry/api'
 import { NodeRuntimeMetrics } from './node-runtime-metrics.js'
 import {
   CompositePropagator,
@@ -47,6 +47,7 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     additionalSpanProcessors = [],
     batchProcessorConfig,
     baggagePropagation,
+    processorMetrics,
     runtimeMetrics: runtimeMetricsConfig,
     views,
     ...processorConfig
@@ -129,6 +130,11 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
       typeof runtimeMetricsConfig === 'object' ? runtimeMetricsConfig : {},
     )
     runtimeMetrics.start()
+  }
+
+  // Processor diagnostic metrics (active spans, tail buffer, throughput, drops)
+  if (processorMetrics !== false) {
+    filteringProcessor.registerMetrics(metrics.getMeter('opin_tel.processor'))
   }
 
   const shutdown = () => {
