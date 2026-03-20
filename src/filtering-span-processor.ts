@@ -3,7 +3,7 @@ import type {
   Span,
   SpanProcessor,
 } from '@opentelemetry/sdk-trace-base'
-import type { Attributes, Context } from '@opentelemetry/api'
+import type { Attributes, Context, AttributeValue } from '@opentelemetry/api'
 import {
   ROOT_CONTEXT,
   propagation,
@@ -151,6 +151,10 @@ export interface FilteringSpanProcessorConfig {
     reason: 'head' | 'tail' | 'burst' | 'sync' | 'conditional' | 'stuck',
     durationMs?: number,
   ) => void
+  /**
+   * Called when a span is accepted and forwarded to the underlying exporter.
+   */
+  onCapturedSpan?: (span: ReadableSpan, durationMs: number) => void
   /** Predicate to determine if a span should be aggregated. Return true for default config, or an AggregateConfig object. */
   aggregateSpan?: (span: Span & ReadableSpan) => boolean | AggregateConfig
   /** Per-instrumentation hooks keyed by instrumentation scope name */
@@ -238,16 +242,16 @@ export class FilteringSpanProcessor implements SpanProcessor {
   private _conditionalDropFns = new Map<string, ShouldDropFn>()
   private _conditionalDropBuffer = new Map<string, ReadableSpan[]>()
   private _traceCounts = new Map<string, TraceCounts>()
-  private _traceContext = new Map<
-    string,
-    Record<string, import('@opentelemetry/api').AttributeValue>
-  >()
+  private _traceContext = new Map<string, Record<string, AttributeValue>>()
   private _onDroppedSpan:
     | ((
         span: ReadableSpan,
         reason: 'head' | 'tail' | 'burst' | 'sync' | 'conditional' | 'stuck',
         durationMs?: number,
       ) => void)
+    | null = null
+  private _onCapturedSpan:
+    | ((span: ReadableSpan, durationMs: number) => void)
     | null = null
   private _logger: OpinionatedLogger
 
@@ -332,6 +336,9 @@ export class FilteringSpanProcessor implements SpanProcessor {
     if (config?.onDroppedSpan) {
       this._onDroppedSpan = config.onDroppedSpan
     }
+    if (config?.onCapturedSpan) {
+      this._onCapturedSpan = config.onCapturedSpan
+    }
     if (
       this._sampling?.tail ||
       this._sampling?.burstProtection ||
@@ -349,7 +356,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
   setTraceContext(
     traceId: string,
-    attrs: Record<string, import('@opentelemetry/api').AttributeValue>,
+    attrs: Record<string, AttributeValue>,
   ): void {
     // Only accept if we're tracking this trace
     if (!this._rootSpans.has(traceId) && !this._tailBuffer.has(traceId)) return
@@ -1083,6 +1090,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
   private _exportSpan(span: ReadableSpan): void {
     this._incrementTraceCount(span.spanContext().traceId, 'captured')
     this._iSpansExported++
+    this._onCapturedSpan?.(span, this._spanDurationMs(span))
     this._wrapped.onEnd(span)
   }
 

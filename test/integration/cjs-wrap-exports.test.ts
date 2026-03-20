@@ -1,6 +1,10 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { createRequire } from 'node:module'
 import path from 'node:path'
+import type {
+  wrapModuleExports,
+  defaultShouldWrap,
+} from '../../src/wrap-exports.js'
 import { createSimpleProvider, cleanupOtel } from '../helpers.js'
 
 const require = createRequire(import.meta.url)
@@ -24,8 +28,8 @@ describe('CJS wrapModuleExports – defaultShouldWrap resolution', () => {
     // Clear require cache to get a fresh module each time
     delete require.cache[require.resolve(cjsPath)]
     return require(cjsPath) as {
-      wrapModuleExports: typeof import('../../src/wrap-exports.js').wrapModuleExports
-      defaultShouldWrap: typeof import('../../src/wrap-exports.js').defaultShouldWrap
+      wrapModuleExports: typeof wrapModuleExports
+      defaultShouldWrap: typeof defaultShouldWrap
     }
   }
 

@@ -71,7 +71,7 @@ Initializes the OTel SDK with opinionated defaults.
 ```ts
 opinionatedTelemetryInit({
   serviceName: string,
-  resourceAttributes?: Record<string, string>,
+  resourceAttributes?: Record<string, AttributeValue>,
   traceExporter?: SpanExporter,
   metricReaders?: MetricReader[],
   resourceDetectors?: ResourceDetector[],
@@ -88,6 +88,7 @@ opinionatedTelemetryInit({
   shutdownSignal?: string | null,                    // default: 'SIGTERM'
   aggregateSpan?: (span) => boolean | AggregateConfig, // default: undefined
   onDroppedSpan?: (span, reason, durationMs?) => void, // called on dropped/sampled/stuck spans
+  onCapturedSpan?: (span, durationMs) => void,         // called on accepted/exported spans
   instrumentations: Instrumentation[],
   instrumentationHooks?: Record<string, OpinionatedOptions>,
   globalHooks?: GlobalHooks,                         // hooks for all spans
@@ -972,6 +973,26 @@ opinionatedTelemetryInit({
         reason,
         attributes: span.attributes,
         durationMs,
+      }) + '\n',
+    )
+  },
+})
+```
+
+### `onCapturedSpan`
+
+Called whenever a span is accepted and forwarded to the underlying exporter. The mirror of `onDroppedSpan` — useful for logging, metrics, or debugging which spans make it through filtering and sampling.
+
+```ts
+opinionatedTelemetryInit({
+  // ...
+  onCapturedSpan: (span, durationMs) => {
+    capturedSpanLog.write(
+      JSON.stringify({
+        name: span.name,
+        traceId: span.spanContext().traceId,
+        durationMs,
+        attributes: span.attributes,
       }) + '\n',
     )
   },

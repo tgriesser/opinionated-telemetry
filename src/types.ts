@@ -12,6 +12,7 @@ import type { NodeRuntimeMetricsConfig } from './node-runtime-metrics.js'
 import type { MetricPattern } from './filtering-metric-exporter.js'
 import type { PushMetricExporter } from '@opentelemetry/sdk-metrics'
 import type { NodeSDKConfiguration } from '@opentelemetry/sdk-node'
+import type { AttributeValue, Tracer } from '@opentelemetry/api'
 
 export interface TraceSummary {
   spans: ReadableSpan[]
@@ -106,7 +107,7 @@ type NodeSDKConfig = Partial<
 export interface OpinionatedTelemetryConfig
   extends FilteringSpanProcessorConfig, NodeSDKConfig {
   serviceName: string
-  resourceAttributes?: Record<string, string>
+  resourceAttributes?: Record<string, AttributeValue>
   spanLimits?: SpanLimits
   /**
    * Signal to register shutdown handler on. Default: 'SIGTERM'
@@ -366,7 +367,7 @@ export interface ClassInstrumentationConfig {
 
 export interface AutoInstrumentHookConfig {
   /** Tracer to use for auto-instrumented spans. Default: `trace.getTracer('opin_tel.auto')` */
-  tracer?: import('@opentelemetry/api').Tracer
+  tracer?: Tracer
   instrumentPaths: AutoInstrumentPath[]
   ignoreRules?: IgnoreRuleEntry[]
   /** Hooks called on every auto-instrumented function invocation */
