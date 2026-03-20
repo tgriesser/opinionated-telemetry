@@ -1,6 +1,6 @@
 {
   "name": "opinionated-telemetry",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "Opinionated OpenTelemetry: We've thought a lot about Telemetry in Node.js, so you don't have to",
   "license": "MIT",
   "sideEffects": false,
