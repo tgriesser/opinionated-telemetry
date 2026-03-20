@@ -119,33 +119,38 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
   let finalMetricReaders = metricReaders
 
   if (metricFilter) {
-    // String drop patterns → DROP views (zero collection overhead, works with any reader)
-    const stringDrops = (metricFilter.drop ?? []).filter(
-      (p): p is string => typeof p === 'string',
-    )
-    if (stringDrops.length) {
-      views = [...(views ?? []), ...dropMetrics(...stringDrops)]
-    }
-
-    // Regex/predicate/allow needs exporter wrapping — only possible with metricExporter
-    const needsExporterFilter =
-      (metricFilter.allow?.length ?? 0) > 0 ||
-      metricFilter.drop?.some((p) => typeof p !== 'string')
-
-    if (needsExporterFilter && !metricExporter) {
-      logger.warn(
-        '[opin_tel] metricFilter with RegExp/predicate patterns or allow requires metricExporter. ' +
-          'String drop patterns have been applied as Views. Use metricExporter for full filtering.',
+    if (metricExporter) {
+      // metricExporter path: always use FilteringMetricExporter for all patterns.
+      // DROP views can be bypassed when other views (e.g. flatMetricExporterViews)
+      // match the same instruments and create their own streams.
+    } else {
+      // metricReaders path: DROP views are the only option for string patterns
+      const stringDrops = (metricFilter.drop ?? []).filter(
+        (p): p is string => typeof p === 'string',
       )
+      if (stringDrops.length) {
+        views = [...(views ?? []), ...dropMetrics(...stringDrops)]
+      }
+
+      const hasNonStringPatterns =
+        (metricFilter.allow?.length ?? 0) > 0 ||
+        metricFilter.drop?.some((p) => typeof p !== 'string')
+
+      if (hasNonStringPatterns) {
+        logger.warn(
+          '[opin_tel] metricFilter with RegExp/predicate patterns or allow requires metricExporter. ' +
+            'String drop patterns have been applied as Views. Use metricExporter for full filtering.',
+        )
+      }
     }
   }
 
   if (metricExporter) {
-    const needsExporterFilter =
-      (metricFilter?.allow?.length ?? 0) > 0 ||
-      metricFilter?.drop?.some((p) => typeof p !== 'string')
+    const hasFilter =
+      (metricFilter?.drop?.length ?? 0) > 0 ||
+      (metricFilter?.allow?.length ?? 0) > 0
 
-    const exporter = needsExporterFilter
+    const exporter = hasFilter
       ? new FilteringMetricExporter({
           exporter: metricExporter,
           drop: metricFilter?.drop,
