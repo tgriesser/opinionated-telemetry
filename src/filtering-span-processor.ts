@@ -30,12 +30,7 @@ import type {
 // Pinned to @opentelemetry/sdk-trace-base v2.x. If the SDK restructures its
 // build output, this import will fail at startup (not silently).
 import { OPIN_TEL_INTERNAL, OPIN_TEL_PREFIX } from './constants.js'
-import {
-  hrTimeToMs,
-  arrayStats,
-  isSpanImplLike,
-  type SpanImpl,
-} from './utils.js'
+import { hrTimeToMs, arrayStats, isSpanImplLike, SpanImpl } from './utils.js'
 import { _registerProvider, _unregisterProvider } from './trace-context.js'
 
 const debug = debugLib('opin_tel:filtering-processor')

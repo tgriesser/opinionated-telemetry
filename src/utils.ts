@@ -23,7 +23,7 @@ export function arrayStats(arr: number[]): {
   return { min, max, sum }
 }
 
-export type { SpanImpl }
+export { SpanImpl }
 
 export function isSpanImplLike(span: unknown): span is SpanImpl {
   if (span instanceof SpanImpl) return true
