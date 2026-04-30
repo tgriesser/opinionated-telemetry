@@ -2,7 +2,14 @@
   "name": "opinionated-telemetry",
   "version": "0.0.0-development",
   "description": "Opinionated OpenTelemetry: We've thought a lot about Telemetry in Node.js, so you don't have to",
+  "repository": {
+    "url": "https://github.com/tgriesser/opinionated-telemetry"
+  },
   "license": "MIT",
+  "author": {
+    "name": "Tim Griesser",
+    "url": "https://github.com/tgriesser"
+  },
   "sideEffects": false,
   "type": "module",
   "exports": {
