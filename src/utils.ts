@@ -1,3 +1,5 @@
+import { SpanImpl } from '@opentelemetry/sdk-trace-base/build/src/Span.js'
+
 type HrTime = [number, number]
 
 export function hrTimeToMs(hr: HrTime): number {
@@ -19,4 +21,15 @@ export function arrayStats(arr: number[]): {
     sum += v
   }
   return { min, max, sum }
+}
+
+export type { SpanImpl }
+
+export function isSpanImplLike(span: unknown): span is SpanImpl {
+  if (span instanceof SpanImpl) return true
+  if (span == null || typeof span !== 'object') return false
+  return (
+    span.constructor.name === 'SpanImpl' ||
+    ('_ended' in span && typeof span._ended === 'boolean')
+  )
 }

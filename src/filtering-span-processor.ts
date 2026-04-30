@@ -29,9 +29,13 @@ import type {
 // Private import — used for instanceof checks and constructing snapshot spans.
 // Pinned to @opentelemetry/sdk-trace-base v2.x. If the SDK restructures its
 // build output, this import will fail at startup (not silently).
-import { SpanImpl } from '@opentelemetry/sdk-trace-base/build/src/Span.js'
 import { OPIN_TEL_INTERNAL, OPIN_TEL_PREFIX } from './constants.js'
-import { hrTimeToMs, arrayStats } from './utils.js'
+import {
+  hrTimeToMs,
+  arrayStats,
+  isSpanImplLike,
+  type SpanImpl,
+} from './utils.js'
 import { _registerProvider, _unregisterProvider } from './trace-context.js'
 
 const debug = debugLib('opin_tel:filtering-processor')
@@ -586,7 +590,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       }
     }
 
-    const isSpanImpl = span instanceof SpanImpl
+    const isSpanImpl = isSpanImplLike(span)
     if (isSpanImpl) {
       // Reopen the span for additional modifications in the onEnd
       span['_ended'] = false
@@ -936,7 +940,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
       this._conditionalDropBuffer.delete(spanId)
       for (const child of buffered) {
         // Reparent to grandparent
-        const isChildImpl = child instanceof SpanImpl
+        const isChildImpl = isSpanImplLike(child)
         if (isChildImpl) {
           child['_ended'] = false
         }
@@ -978,7 +982,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     const inheritAttrs = result === 'collapse'
 
     for (const child of buffered) {
-      const isChildImpl = child instanceof SpanImpl
+      const isChildImpl = isSpanImplLike(child)
       if (isChildImpl) {
         child['_ended'] = false
       }
@@ -1062,7 +1066,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
 
     // Sampling
     if (this._sampling) {
-      this._applySampling(span as Span & ReadableSpan, span instanceof SpanImpl)
+      this._applySampling(span as Span & ReadableSpan, isSpanImplLike(span))
       return
     }
 
@@ -1854,7 +1858,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
     // Apply trace context retroactively to tail-buffered spans
     const flushTraceCtx = this._traceContext.get(traceId)
     for (const buffered of entry.spans) {
-      const isImpl = buffered instanceof SpanImpl
+      const isImpl = isSpanImplLike(buffered)
       if (flushTraceCtx) {
         if (isImpl) buffered['_ended'] = false
         for (const [key, value] of Object.entries(flushTraceCtx)) {
