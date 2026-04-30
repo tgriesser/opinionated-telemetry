@@ -18,35 +18,85 @@ categories:
     labels:
       - bug
       - fix
-  - title: Documentation
+  - title: Maintenance
     labels:
-      - documentation
+      - chore
+      - refactor
+      - build
+      - ci
+      - test
+      - performance
+      - perf
       - docs
+      - documentation
   - title: Other Changes
     labels:
       - '*'
+
+# Pre-1.0 versioning: breaking changes bump minor (0.1.0 -> 0.2.0), everything
+# else is patch by default. Add the `enhancement` or `feature` label by hand
+# when a release deserves a minor bump.
 version-resolver:
-  major:
-    labels:
-      - breaking
   minor:
     labels:
+      - breaking
       - enhancement
       - feature
-  patch:
-    labels:
-      - bug
-      - fix
   default: patch
+
+# Once we ship 1.0, swap the version-resolver above for the SemVer-standard one:
+#
+# version-resolver:
+#   major:
+#     labels:
+#       - breaking
+#   minor:
+#     labels:
+#       - enhancement
+#       - feature
+#   patch:
+#     labels:
+#       - bug
+#       - fix
+#   default: patch
+
 autolabeler:
-  - label: documentation
-    files:
-      - '*.md'
-      - 'docs/**'
-  - label: bug
-    branch:
-      - '/fix\/.+/'
+  - label: breaking
+    title:
+      - '/^[a-z]+(\(.+\))?!:/'
+      - '/BREAKING CHANGE/'
   - label: feature
+    title:
+      - '/^feat(\(.+\))?:/'
     branch:
       - '/feat\/.+/'
       - '/feature\/.+/'
+  - label: bug
+    title:
+      - '/^fix(\(.+\))?:/'
+    branch:
+      - '/fix\/.+/'
+  - label: perf
+    title:
+      - '/^perf(\(.+\))?:/'
+  - label: docs
+    title:
+      - '/^docs(\(.+\))?:/'
+    files:
+      - '*.md'
+      - 'docs/**'
+  - label: refactor
+    title:
+      - '/^refactor(\(.+\))?:/'
+  - label: test
+    title:
+      - '/^test(\(.+\))?:/'
+  - label: build
+    title:
+      - '/^build(\(.+\))?:/'
+  - label: ci
+    title:
+      - '/^ci(\(.+\))?:/'
+  - label: chore
+    title:
+      - '/^chore(\(.+\))?:/'
