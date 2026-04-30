@@ -29,6 +29,7 @@ categories:
       - perf
       - docs
       - documentation
+      - revert
   - title: Other Changes
     labels:
       - '*'
@@ -100,3 +101,7 @@ autolabeler:
   - label: chore
     title:
       - '/^chore(\(.+\))?:/'
+  - label: revert
+    title:
+      - '/^revert(\(.+\))?:/'
+      - '/^Revert /'
