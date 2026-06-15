@@ -1,5 +1,11 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { trace, SpanStatusCode } from '@opentelemetry/api'
+import { trace, metrics, SpanStatusCode } from '@opentelemetry/api'
+import {
+  MeterProvider,
+  InMemoryMetricExporter,
+  PeriodicExportingMetricReader,
+  AggregationTemporality,
+} from '@opentelemetry/sdk-metrics'
 import { otelInitBull } from '../../src/integrations/bull.js'
 import { cleanupOtel, createSimpleProvider } from '../helpers.js'
 
@@ -322,5 +328,144 @@ describe('otelInitBull', () => {
     expect(span.status.code).toBe(SpanStatusCode.ERROR)
 
     await provider.shutdown()
+  })
+})
+
+describe('otelInitBull metrics', () => {
+  function createMeterSetup() {
+    const exporter = new InMemoryMetricExporter(
+      AggregationTemporality.CUMULATIVE,
+    )
+    const reader = new PeriodicExportingMetricReader({
+      exporter,
+      exportIntervalMillis: 60_000,
+    })
+    const provider = new MeterProvider({ readers: [reader] })
+    metrics.setGlobalMeterProvider(provider)
+    return {
+      provider,
+      async collect() {
+        await reader.forceFlush()
+        const byName = new Map<string, any[]>()
+        for (const rm of exporter.getMetrics()) {
+          for (const sm of rm.scopeMetrics) {
+            for (const m of sm.metrics) {
+              byName.set(m.descriptor.name, m.dataPoints as any[])
+            }
+          }
+        }
+        return byName
+      },
+    }
+  }
+
+  function createMetricBull() {
+    function Bull(this: any) {
+      this.name = 'emails'
+      this.getJobCounts = async () => ({
+        waiting: 3,
+        active: 1,
+        delayed: 2,
+        paused: 0,
+        completed: 9,
+        failed: 1,
+      })
+    }
+    Bull.prototype.process = function (this: any, fn: any) {
+      this._processor = fn
+    }
+    Bull.prototype.add = function (_n: any, data: any) {
+      return data
+    }
+    Bull.prototype.on = function () {}
+    return Bull
+  }
+
+  afterEach(async () => {
+    metrics.disable()
+    cleanupOtel()
+  })
+
+  it('records depth, throughput, and duration for a processed job', async () => {
+    const meterSetup = createMeterSetup()
+    const { provider: traceProvider } = createSimpleProvider()
+    trace.setGlobalTracerProvider(traceProvider)
+
+    const Bull = createMetricBull()
+    otelInitBull(Bull)
+    const queue = new (Bull as any)()
+    queue.process(async () => 'ok')
+    await queue._processor({ id: 1, attemptsMade: 0, queue, data: {} })
+
+    const m = await meterSetup.collect()
+
+    // throughput counter
+    const processed = m.get('bull.jobs.processed')!
+    expect(
+      processed.find((dp) => dp.attributes['bull.job.status'] === 'completed')
+        ?.value,
+    ).toBe(1)
+
+    // duration histogram
+    expect(m.get('bull.job.duration')![0].value.count).toBe(1)
+
+    // depth gauge, by state — completed/failed excluded
+    const depth = m.get('bull.queue.jobs')!
+    const byState = (s: string) =>
+      depth.find((dp) => dp.attributes['bull.job.state'] === s)?.value
+    expect(byState('waiting')).toBe(3)
+    expect(byState('active')).toBe(1)
+    expect(byState('delayed')).toBe(2)
+    expect(
+      depth.some((dp) => dp.attributes['bull.job.state'] === 'completed'),
+    ).toBe(false)
+
+    await traceProvider.shutdown()
+    await meterSetup.provider.shutdown()
+  })
+
+  it('counts failed jobs with bull.job.status=failed', async () => {
+    const meterSetup = createMeterSetup()
+    const { provider: traceProvider } = createSimpleProvider()
+    trace.setGlobalTracerProvider(traceProvider)
+
+    const Bull = createMetricBull()
+    otelInitBull(Bull)
+    const queue = new (Bull as any)()
+    queue.process(async () => {
+      throw new Error('boom')
+    })
+    await expect(
+      queue._processor({ id: 2, attemptsMade: 0, queue, data: {} }),
+    ).rejects.toThrow('boom')
+
+    const m = await meterSetup.collect()
+    const processed = m.get('bull.jobs.processed')!
+    expect(
+      processed.find((dp) => dp.attributes['bull.job.status'] === 'failed')
+        ?.value,
+    ).toBe(1)
+
+    await traceProvider.shutdown()
+    await meterSetup.provider.shutdown()
+  })
+
+  it('emits no queue metrics when metrics:false', async () => {
+    const meterSetup = createMeterSetup()
+    const { provider: traceProvider } = createSimpleProvider()
+    trace.setGlobalTracerProvider(traceProvider)
+
+    const Bull = createMetricBull()
+    otelInitBull(Bull, { metrics: false })
+    const queue = new (Bull as any)()
+    queue.process(async () => 'ok')
+    await queue._processor({ id: 3, attemptsMade: 0, queue, data: {} })
+
+    const m = await meterSetup.collect()
+    expect(m.has('bull.jobs.processed')).toBe(false)
+    expect(m.has('bull.queue.jobs')).toBe(false)
+
+    await traceProvider.shutdown()
+    await meterSetup.provider.shutdown()
   })
 })

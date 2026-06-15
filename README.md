@@ -1127,6 +1127,16 @@ Patches `Bull.prototype` to trace job processing with span links connecting prod
 - **`.process()`** creates a new root span with a span link back to the enqueuing span
 - **`.on()`** wraps async event handlers with spans for lifecycle events
 
+It also emits **queue metrics** (unless `metrics: false`):
+
+| Metric                | Type      | Attributes                                                          | Meaning                                                                              |
+| --------------------- | --------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `bull.queue.jobs`     | gauge     | `bull.queue.name`, `bull.job.state` (waiting/active/delayed/paused) | Current backlog via `getJobCounts()` (one Redis round-trip per queue per collection) |
+| `bull.jobs.processed` | counter   | `bull.queue.name`, `bull.job.status` (completed/failed)             | Processing attempts — throughput + error rate                                        |
+| `bull.job.duration`   | histogram | `bull.queue.name`                                                   | Job processing time (ms)                                                             |
+
+Queues are discovered as they're used via the patched `.add()`/`.process()`. (Throughput is a real counter rather than `getJobCounts()`'s `completed`/`failed`, which are trimmable set sizes — so the gauge tracks only pending states.)
+
 Call before any queues are created. Pass the Bull constructor (not an instance).
 
 ```ts
@@ -1143,12 +1153,14 @@ otelInitBull(Bull, {
 | -------------- | ---------------------------------------------------------------------------------------------- |
 | `tracerName`   | Tracer name for bull spans. Default: `'bull-otel'`                                             |
 | `tracedEvents` | Events to wrap with spans on `.on()`. Default: `['completed', 'stalled', 'failed', 'waiting']` |
+| `meterName`    | Meter name for queue metrics. Default: `'bull-otel'`                                           |
+| `metrics`      | Emit queue depth/throughput/duration metrics. Default: `true`                                  |
 
 ### Socket.IO
 
 Two functions for Socket.IO observability:
 
-- **`otelInitSocketIo(io)`** sets up an observable gauge tracking open connection count (`socket.io.open_connections`)
+- **`otelInitSocketIo(io)`** sets up observable gauges for open connections — `socket.io.open_connections` (current) and `socket.io.open_connections.max` (peak since last observation, to catch reconnect spikes a snapshot misses)
 - **`otelPatchSocketIo(socket, config)`** patches a socket's `.on()` to inject baggage context into all event handlers, so spans created during socket events inherit user/session context
 
 ```ts

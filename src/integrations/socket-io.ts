@@ -29,6 +29,20 @@ export function otelInitSocketIo(io: any, config?: SocketOtelConfig): void {
     .addCallback((gauge) => {
       gauge.observe(io.engine.clientsCount)
     })
+
+  let peak = io.engine.clientsCount
+  io.on('connection', () => {
+    if (io.engine.clientsCount > peak) peak = io.engine.clientsCount
+  })
+  meter
+    .createObservableGauge('socket.io.open_connections.max', {
+      description:
+        'Peak open Socket.IO connections since the last metric observation',
+    })
+    .addCallback((gauge) => {
+      gauge.observe(peak)
+      peak = io.engine.clientsCount
+    })
 }
 
 /**

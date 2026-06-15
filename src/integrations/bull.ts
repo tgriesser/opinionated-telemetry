@@ -1,4 +1,13 @@
-import { trace, SpanStatusCode, SpanKind, type Link } from '@opentelemetry/api'
+import {
+  trace,
+  metrics,
+  SpanStatusCode,
+  SpanKind,
+  type Link,
+  type Counter,
+  type Histogram,
+} from '@opentelemetry/api'
+import { performance } from 'node:perf_hooks'
 import debugLib from 'debug'
 
 const debug = debugLib('opin_tel:bull')
@@ -8,6 +17,10 @@ export interface BullOtelConfig {
   tracerName?: string
   /** Events to trace on .on(). Default: ['completed', 'stalled', 'failed', 'waiting'] */
   tracedEvents?: string[]
+  /** Meter name for queue metrics. Default: 'bull-otel' */
+  meterName?: string
+  /** Emit queue depth/throughput/duration metrics. Default: true */
+  metrics?: boolean
 }
 
 const DEFAULT_TRACED_EVENTS = new Set([
@@ -36,6 +49,54 @@ export function otelInitBull(Bull: any, config?: BullOtelConfig): void {
 
   debug('patching Bull.prototype (process, add, on)')
 
+  // ── Queue metrics ──
+  // Queue instances are registered as they're seen via patched add()/process(),
+  // then a single async observable reports their depth. Throughput and duration
+  // are recorded at the processing site below.
+  const metricsEnabled = config?.metrics !== false
+  const queues = new Set<any>()
+  let jobsProcessed: Counter | undefined
+  let jobDuration: Histogram | undefined
+
+  if (metricsEnabled) {
+    const meter = metrics.getMeter(config?.meterName ?? 'bull-otel')
+
+    jobsProcessed = meter.createCounter('bull.jobs.processed', {
+      description:
+        'Bull job processing attempts, by queue and outcome (bull.job.status)',
+    })
+    jobDuration = meter.createHistogram('bull.job.duration', {
+      unit: 'ms',
+      description: 'Bull job processing duration, by queue',
+    })
+
+    // Backlog: current pending jobs by state. getJobCounts() is a Redis round-
+    // trip, run once per collection per queue. completed/failed are intentionally
+    // excluded here — those are trimmable set sizes, so throughput is the counter.
+    const PENDING_STATES = ['waiting', 'active', 'delayed', 'paused'] as const
+    meter
+      .createObservableGauge('bull.queue.jobs', {
+        description:
+          'Pending Bull jobs by queue and state (waiting/active/delayed/paused)',
+      })
+      .addCallback(async (observer) => {
+        for (const queue of queues) {
+          try {
+            const counts = await queue.getJobCounts()
+            const name = queue.name ?? 'unknown'
+            for (const state of PENDING_STATES) {
+              observer.observe(counts?.[state] ?? 0, {
+                'bull.queue.name': name,
+                'bull.job.state': state,
+              })
+            }
+          } catch {
+            // queue may be closed/unavailable — skip it this cycle
+          }
+        }
+      })
+  }
+
   const originalProcess = Bull.prototype.process
   const originalAdd = Bull.prototype.add
   const originalOn = Bull.prototype.on
@@ -48,6 +109,9 @@ export function otelInitBull(Bull: any, config?: BullOtelConfig): void {
         typeof args[0] === 'string' ? args[0] : this.name || 'unknown'
 
       args[processorIdx] = function tracedProcessor(bullJob: any) {
+        const queueName = bullJob.queue?.name || 'unknown'
+        if (metricsEnabled && bullJob.queue) queues.add(bullJob.queue)
+
         const links: Link[] = []
         const otelLink = bullJob.data?.__otelLink
         if (otelLink) {
@@ -72,15 +136,30 @@ export function otelInitBull(Bull: any, config?: BullOtelConfig): void {
             span.setAttributes({
               'bull.job.name': jobName,
               'bull.job.id': String(bullJob.id),
-              'bull.queue.name': bullJob.queue?.name || 'unknown',
+              'bull.queue.name': queueName,
               'bull.job.attempts': bullJob.attemptsMade,
             })
 
+            const start = performance.now()
             try {
               const result = await processorFn(bullJob)
+              jobDuration?.record(performance.now() - start, {
+                'bull.queue.name': queueName,
+              })
+              jobsProcessed?.add(1, {
+                'bull.queue.name': queueName,
+                'bull.job.status': 'completed',
+              })
               span.end()
               return result
             } catch (err: any) {
+              jobDuration?.record(performance.now() - start, {
+                'bull.queue.name': queueName,
+              })
+              jobsProcessed?.add(1, {
+                'bull.queue.name': queueName,
+                'bull.job.status': 'failed',
+              })
               span.recordException(err)
               span.setStatus({
                 code: SpanStatusCode.ERROR,
@@ -97,6 +176,7 @@ export function otelInitBull(Bull: any, config?: BullOtelConfig): void {
   }
 
   Bull.prototype.add = function patchedAdd(this: any, ...args: any[]) {
+    if (metricsEnabled) queues.add(this)
     const currentSpan = trace.getActiveSpan()
     const link = currentSpan
       ? {
