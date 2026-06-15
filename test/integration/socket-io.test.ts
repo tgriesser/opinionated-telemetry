@@ -1,5 +1,11 @@
 import { describe, it, expect, afterEach, afterAll } from 'vitest'
 import { metrics, propagation } from '@opentelemetry/api'
+import {
+  MeterProvider,
+  InMemoryMetricExporter,
+  PeriodicExportingMetricReader,
+  AggregationTemporality,
+} from '@opentelemetry/sdk-metrics'
 import { createServer } from 'node:http'
 import { Server } from 'socket.io'
 import { io as ioClient } from 'socket.io-client'
@@ -10,11 +16,14 @@ import {
 import { cleanupOtel, setupOtel } from '../helpers.js'
 
 describe('otelInitSocketIo', () => {
-  afterEach(() => cleanupOtel())
+  afterEach(() => {
+    metrics.disable()
+    cleanupOtel()
+  })
 
   it('creates an observable gauge for open connections', () => {
     setupOtel()
-    const mockIo = { engine: { clientsCount: 5 } }
+    const mockIo = { engine: { clientsCount: 5 }, on: () => {} }
 
     // otelInitSocketIo just sets up the gauge — it shouldn't throw
     expect(() => otelInitSocketIo(mockIo)).not.toThrow()
@@ -22,10 +31,52 @@ describe('otelInitSocketIo', () => {
 
   it('uses custom meter name', () => {
     setupOtel()
-    const mockIo = { engine: { clientsCount: 3 } }
+    const mockIo = { engine: { clientsCount: 3 }, on: () => {} }
     expect(() =>
       otelInitSocketIo(mockIo, { meterName: 'custom-meter' }),
     ).not.toThrow()
+  })
+
+  it('tracks peak connections via the .max watermark', async () => {
+    setupOtel()
+    const exporter = new InMemoryMetricExporter(
+      AggregationTemporality.CUMULATIVE,
+    )
+    const reader = new PeriodicExportingMetricReader({
+      exporter,
+      exportIntervalMillis: 60_000,
+    })
+    const provider = new MeterProvider({ readers: [reader] })
+    metrics.setGlobalMeterProvider(provider)
+
+    let onConnection: () => void = () => {}
+    const mockIo = {
+      engine: { clientsCount: 2 },
+      on: (event: string, cb: () => void) => {
+        if (event === 'connection') onConnection = cb
+      },
+    }
+    otelInitSocketIo(mockIo)
+
+    // Spike to 10 (fires a connection event), then settle back to 3
+    mockIo.engine.clientsCount = 10
+    onConnection()
+    mockIo.engine.clientsCount = 3
+
+    await reader.forceFlush()
+    const vals = new Map<string, number>()
+    for (const rm of exporter.getMetrics()) {
+      for (const sm of rm.scopeMetrics) {
+        for (const m of sm.metrics) {
+          vals.set(m.descriptor.name, m.dataPoints[0]?.value as number)
+        }
+      }
+    }
+
+    expect(vals.get('socket.io.open_connections')).toBe(3) // current
+    expect(vals.get('socket.io.open_connections.max')).toBe(10) // peak caught
+
+    await provider.shutdown()
   })
 })
 

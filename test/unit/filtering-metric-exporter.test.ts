@@ -8,6 +8,7 @@ import {
   AggregationTemporality,
   AggregationType,
   DataPointType,
+  InstrumentType,
 } from '@opentelemetry/sdk-metrics'
 import {
   FilteringMetricExporter,
@@ -89,7 +90,7 @@ describe('FilteringMetricExporter', () => {
         makeResourceMetrics(
           'http.server.request.duration',
           'http.server.active_requests',
-          'node.heap.used_mb',
+          'node.heap.used_mib',
         ),
       )
 
@@ -98,7 +99,7 @@ describe('FilteringMetricExporter', () => {
       const names = mock.exported[0].scopeMetrics[0].metrics.map(
         (m) => m.descriptor.name,
       )
-      expect(names).toEqual(['node.heap.used_mb'])
+      expect(names).toEqual(['node.heap.used_mib'])
     })
 
     it('drops metrics matching regex', () => {
@@ -113,7 +114,7 @@ describe('FilteringMetricExporter', () => {
         makeResourceMetrics(
           'node.gc.major.count',
           'node.gc.major.avg_ms',
-          'node.heap.used_mb',
+          'node.heap.used_mib',
         ),
       )
 
@@ -121,7 +122,7 @@ describe('FilteringMetricExporter', () => {
       const names = mock.exported[0].scopeMetrics[0].metrics.map(
         (m) => m.descriptor.name,
       )
-      expect(names).toEqual(['node.heap.used_mb'])
+      expect(names).toEqual(['node.heap.used_mib'])
     })
 
     it('drops metrics matching predicate function', () => {
@@ -167,7 +168,7 @@ describe('FilteringMetricExporter', () => {
           'http.server.request.duration',
           'node.gc.major.count',
           'node.requests',
-          'node.heap.used_mb',
+          'node.heap.used_mib',
         ),
       )
 
@@ -175,7 +176,7 @@ describe('FilteringMetricExporter', () => {
       const names = mock.exported[0].scopeMetrics[0].metrics.map(
         (m) => m.descriptor.name,
       )
-      expect(names).toEqual(['node.heap.used_mb'])
+      expect(names).toEqual(['node.heap.used_mib'])
     })
   })
 
@@ -191,7 +192,7 @@ describe('FilteringMetricExporter', () => {
         exporter,
         makeResourceMetrics(
           'opin_tel.processor.spans.active',
-          'node.heap.used_mb',
+          'node.heap.used_mib',
           'node.gc.major.count',
           'http.server.request.duration',
         ),
@@ -203,7 +204,7 @@ describe('FilteringMetricExporter', () => {
       )
       expect(names).toEqual([
         'opin_tel.processor.spans.active',
-        'node.heap.used_mb',
+        'node.heap.used_mib',
       ])
     })
 
@@ -219,7 +220,7 @@ describe('FilteringMetricExporter', () => {
         makeResourceMetrics(
           'opin_tel.processor.spans.active',
           'node.cpu.total_pct',
-          'node.heap.used_mb',
+          'node.heap.used_mib',
         ),
       )
 
@@ -248,7 +249,7 @@ describe('FilteringMetricExporter', () => {
         makeResourceMetrics(
           'opin_tel.processor.spans.active',
           'opin_tel.processor.spans.dropped.sync',
-          'node.heap.used_mb', // not in allow list
+          'node.heap.used_mib', // not in allow list
         ),
       )
 
@@ -347,7 +348,7 @@ describe('FilteringMetricExporter', () => {
         makeResourceMetrics(
           'http.server.request.duration',
           'http.client.duration',
-          'node.heap.used_mb',
+          'node.heap.used_mib',
         ),
       )
 
@@ -364,19 +365,42 @@ describe('FilteringMetricExporter', () => {
       const mock = createMockExporter()
       const exporter = new FilteringMetricExporter({
         exporter: mock,
-        drop: ['node.heap.used_mb'],
+        drop: ['node.heap.used_mib'],
       })
 
       exportSync(
         exporter,
-        makeResourceMetrics('node.heap.used_mb', 'node.heap.total_mb'),
+        makeResourceMetrics('node.heap.used_mib', 'node.heap.total_mib'),
       )
 
       const names = mock.exported[0].scopeMetrics[0].metrics.map(
         (m) => m.descriptor.name,
       )
-      expect(names).toEqual(['node.heap.total_mb'])
+      expect(names).toEqual(['node.heap.total_mib'])
     })
+  })
+})
+
+describe('FilteringMetricExporter aggregation temporality', () => {
+  it('delegates to the wrapped exporter (so honeycomb delta propagates)', () => {
+    const inner: PushMetricExporter = {
+      ...createMockExporter(),
+      selectAggregationTemporality: () => AggregationTemporality.DELTA,
+    }
+    const exporter = new FilteringMetricExporter({ exporter: inner })
+    expect(exporter.selectAggregationTemporality(InstrumentType.COUNTER)).toBe(
+      AggregationTemporality.DELTA,
+    )
+  })
+
+  it('falls back to cumulative when the wrapped exporter expresses none', () => {
+    // createMockExporter has no selectAggregationTemporality
+    const exporter = new FilteringMetricExporter({
+      exporter: createMockExporter(),
+    })
+    expect(exporter.selectAggregationTemporality(InstrumentType.COUNTER)).toBe(
+      AggregationTemporality.CUMULATIVE,
+    )
   })
 })
 

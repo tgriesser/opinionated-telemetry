@@ -22,10 +22,6 @@ export const OPIN_TEL_INTERNAL = {
   eventLoop: {
     utilization: `${prefix}event_loop.utilization`,
   },
-  metrics: {
-    activeSpans: `${prefix}active_spans`,
-    activeRootSpans: `${prefix}active_root_spans`,
-  },
   meta: {
     isAggregate: `${prefix}meta.is_aggregate`,
     incompleteTrace: `${prefix}meta.incomplete_trace`,

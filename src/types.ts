@@ -136,14 +136,33 @@ export interface OpinionatedTelemetryConfig
    */
   baggagePropagation?: BaggagePropagationConfig
   /**
+   * High-level on/off switches for the built-in metric sources. Each defaults
+   * to enabled. Use this for coarse "which sources do I want" decisions and
+   * `metricFilter` for fine-grained name-based include/exclude — they compose.
+   *
+   * Disabling `runtime`/`processor` stops collection at the source (cheaper than
+   * filtering at export). Disabling `http` adds zero-overhead DROP Views for
+   * `http.server.*` / `http.client.*`.
+   */
+  metricSources?: {
+    /** HTTP server/client metrics from instrumentation-http. Default: true. */
+    http?: boolean
+    /** Node runtime metrics (event loop, heap, GC, CPU, memory). Default: true. */
+    runtime?: boolean
+    /** Processor diagnostic metrics (`opin_tel.processor.*`). Default: true. */
+    processor?: boolean
+  }
+  /**
    * Configure runtime metrics collection (event loop, heap, GC, CPU, handles, memory).
-   * Set to false to disable. Pass a config object to customize.
+   * Set to false to disable. Pass a config object to customize. Composes with
+   * `metricSources.runtime` (either disabling turns it off).
    * Default: enabled with default settings.
    */
   runtimeMetrics?: NodeRuntimeMetricsConfig | false
   /**
    * Expose processor diagnostic metrics (active spans, traces, tail buffer depth,
-   * throughput counters, drop reasons). Set to false to disable.
+   * throughput counters, drop reasons). Set to false to disable. Composes with
+   * `metricSources.processor` (either disabling turns it off).
    * Default: true
    */
   processorMetrics?: boolean
@@ -169,6 +188,30 @@ export interface OpinionatedTelemetryConfig
     /** Only metrics matching at least one pattern are kept. Applied before drop. */
     allow?: MetricPattern[]
   }
+  /**
+   * Strip resource attributes from exported metrics only (traces keep the full
+   * resource). Honeycomb flattens resource attributes onto every metric row, so
+   * verbose ones like `process.command_args` add noise to no benefit. Requires
+   * the `metricExporter` path (not `metricReaders`). String = exact key; RegExp
+   * is tested against the key.
+   */
+  metricResourceAttributes?: {
+    /** Resource attribute keys to drop from metrics. */
+    drop?: (string | RegExp)[]
+    /** If set, only matching keys are kept (applied before drop). */
+    keep?: (string | RegExp)[]
+  }
+  /**
+   * Disable `@opentelemetry/instrumentation-runtime-node` if present in
+   * `instrumentations` — its `nodejs.*` / `v8js.*` metrics duplicate the built-in
+   * `node.*` runtime metrics.
+   *
+   * Default (`undefined`): auto — disabled whenever the built-in runtime metrics
+   * are active. Set `false` to keep both (the upstream config cannot signal this
+   * itself, since an explicit `{ enabled: true }` is indistinguishable from the
+   * default). Set `true` to always disable it.
+   */
+  disableRuntimeNodeInstrumentation?: boolean
 }
 
 export type AggregateGenericOption = 'uniq'

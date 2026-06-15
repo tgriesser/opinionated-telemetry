@@ -22,8 +22,8 @@ Best suited for & meant use with [Honeycomb.io](https://www.honeycomb.io/). Virt
 - **Head & Tail Based Sampling**: Includes sensible approaches to dealing with Head & Tail based sampling out of the box
 - **Burst Protection**: Along with the sampling, includes some conventions for preventing a simple coding mistake that generates an infinite loop spawning thousands of spans per second from doing too much damage.
 - **Span aggregation**: collapses N parallel sibling spans with the same name (dataloader batches, S3 multi-get, parallel DB queries) into a single aggregate span with summary statistics, while preserving individual error spans. Configurable via per-scope options or a root-level predicate, with optional custom attribute stats (min, max, avg, median, uniq, etc.)
-- **Flat metric exporter**: [opt-in exporter](#flat-metric-exporter) that wraps your metric exporter to fold dimensional attributes into metric names and expand histograms into summary stats + percentiles — so Honeycomb merges everything into a single wide event per collection cycle.
-- **Node runtime metrics**: [focused runtime health metrics](#node-runtime-metrics) (event loop delay, heap, GC, CPU, handles, memory) using built-in Node.js APIs — replaces noisy `@opentelemetry/host-metrics` and `instrumentation-runtime-node` with 18 actionable gauges and zero attributes.
+- **Metric sources**: [pick which sources you export](#metric-sources) (HTTP, runtime, processor) with simple on/off toggles. Honeycomb stores metrics natively, so they're sent as-is over OTLP — no flattening.
+- **Node runtime metrics**: [focused runtime health metrics](#node-runtime-metrics) (event loop delay + utilization, heap, GC, CPU, active resources, memory) using built-in Node.js APIs — replaces noisy `@opentelemetry/host-metrics` and `instrumentation-runtime-node` with a focused, actionable set (heap/memory/CPU/event-loop + GC as sub-interval-sampled histograms so peaks aren't averaged away).
 - **Metric filtering**: [drop/allow metrics](#metric-filtering) by name using glob patterns, regex, or predicates — cut metric noise and cost without learning the OTel Views API
 - **Integration helpers**: knex, graphql, bull, socket.io, express
 - **Event loop utilization**: captures event loop utilization (0-1) on all spans. Useful for alerting on situation where expensive spans are blocking the event loop. Particularly useful when dealing with things that are synchronous, like `fs` calls or `better-sqlite3` queries
@@ -96,9 +96,12 @@ opinionatedTelemetryInit({
   baggagePropagation?: BaggagePropagationConfig, // default: suppress all outbound
   runtimeMetrics?: NodeRuntimeMetricsConfig | false, // default: enabled
   processorMetrics?: boolean,                    // default: true — see docs/PROCESSOR_METRICS.md
+  metricSources?: { http?, runtime?, processor? }, // high-level source toggles — see Metric Sources
+  disableRuntimeNodeInstrumentation?: boolean,   // default: auto — dedupe instrumentation-runtime-node
   metricExporter?: PushMetricExporter,           // shorthand: we create the MetricReader for you
   metricExportInterval?: number,                 // default: 60_000 (used with metricExporter)
   metricFilter?: { drop?: MetricPattern[], allow?: MetricPattern[] }, // see Metric Filtering
+  metricResourceAttributes?: { drop?: (string|RegExp)[], keep?: (string|RegExp)[] }, // trim resource attrs from metrics
   logger?: OpinionatedLogger,                    // default: console
 })
 ```
@@ -640,112 +643,96 @@ const { sdk, getTracer, shutdown, runtimeMetrics } = honeycombInit({
 This sets up:
 
 - **Trace export** to `https://api.honeycomb.io/v1/traces` with dataset = `serviceName`
-- **Metric export** via `FlatMetricExporter` to `https://api.honeycomb.io/v1/metrics` with dataset = `${serviceName}_metrics`, collected every 60s
-- **Runtime metrics** — 18 focused Node.js health gauges (event loop delay, heap, GC, CPU, handles, memory) auto-started unless `runtimeMetrics: false`
+- **Metric export** — native OTLP metrics to `https://api.honeycomb.io/v1/metrics` with dataset = `${serviceName}_metrics`, collected every 60s, with **delta** temporality (each export carries that interval's counts/distribution — Honeycomb sums the raw points instead of differencing cumulative series, which also makes the per-interval histogram peaks meaningful)
+- **Runtime metrics** — focused Node.js health metrics (event loop delay + utilization, heap, GC, CPU, active resources, memory) auto-started unless `runtimeMetrics: false`
+
+By default `honeycombInit` is conservative about what metrics it ships: only **runtime** (`node.*`) and your own custom metrics. **HTTP** and **processor-diagnostic** metric sources are off (`metricSources: { http: false, processor: false }`), and a duplicate `instrumentation-runtime-node` is disabled (`disableRuntimeNodeInstrumentation: true`). Opt any of them back in explicitly — e.g. `metricSources: { http: true }`.
 
 All other `opinionatedTelemetryInit` options are supported. `traceExporter` and `metricExporter` can be overridden if you need custom exporter configuration.
 
-| Option                   | Type                                | Default  | Description                                              |
-| ------------------------ | ----------------------------------- | -------- | -------------------------------------------------------- |
-| `apiKey`                 | `string`                            | required | Honeycomb API key                                        |
-| `enableMetricCollection` | `boolean`                           | `true`   | Set to `false` to disable metric collection              |
-| `metricExportInterval`   | `number`                            | `60_000` | Metric export interval in milliseconds                   |
-| `traceExporter`          | `SpanExporter`                      | —        | Override the default OTLP trace exporter                 |
-| `metricExporter`         | `PushMetricExporter`                | —        | Override the default OTLP metric exporter                |
-| `runtimeMetrics`         | `NodeRuntimeMetricsConfig \| false` | `{}`     | Configure or disable runtime metrics (see section below) |
+| Option                   | Type                                | Default                  | Description                                                                          |
+| ------------------------ | ----------------------------------- | ------------------------ | ------------------------------------------------------------------------------------ |
+| `apiKey`                 | `string`                            | required                 | Honeycomb API key                                                                    |
+| `enableMetricCollection` | `boolean`                           | `true`                   | Set to `false` to disable metric collection                                          |
+| `metricExportInterval`   | `number`                            | `60_000`                 | Metric export interval in milliseconds                                               |
+| `metricsDataset`         | `string`                            | `${serviceName}_metrics` | Dataset for metrics (required by Honeycomb; routed by this header, not service.name) |
+| `traceExporter`          | `SpanExporter`                      | —                        | Override the default OTLP trace exporter                                             |
+| `metricExporter`         | `PushMetricExporter`                | —                        | Override the default OTLP metric exporter                                            |
+| `runtimeMetrics`         | `NodeRuntimeMetricsConfig \| false` | `{}`                     | Configure or disable runtime metrics (see section below)                             |
 
 The entrypoint also re-exports everything from the main `opinionated-telemetry` package, so you can use it as your sole import.
 
-## Flat Metric Exporter
+## Metric Sources
 
-Honeycomb [merges metric data points into a single event](https://docs.honeycomb.io/manage-data-volume/adjust-granularity/metrics-events) when they share the same timestamp, resource, and data point attributes. But metrics with **different** dimensional attributes (like `v8js.heap.space.name=new_space` vs `v8js.gc.type=major`) end up as separate events.
+Honeycomb [stores metrics natively](https://docs.honeycomb.io/get-started/honeycomb/metrics-in-honeycomb) in a dedicated metrics dataset — gauges, sums, and histograms are first-class, dimensions are preserved, and billing is by data points (not unique time series). So metrics are sent **as-is** over OTLP with no flattening or transformation.
 
-The `FlatMetricExporter` wraps your `OTLPMetricExporter` (or any `PushMetricExporter`) and transforms metrics before export:
+The job, then, is simply choosing **which sources** you export. There are two layers that compose:
 
-1. **Folds dimensional attributes into metric names** — so all data points have the same (empty) attribute set
-2. **Expands histograms** into individual gauge metrics with summary stats and percentiles
-
-This ensures Honeycomb merges everything into one wide event per collection cycle.
+- **`metricSources`** — coarse on/off switches for the built-in sources
+- **`metricFilter`** — fine-grained name-based include/exclude (globs, regex, predicates — see [Metric Filtering](#metric-filtering))
 
 ```ts
-import { FlatMetricExporter } from 'opinionated-telemetry/metrics'
-import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics'
-import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-proto'
-
-const metricReader = new PeriodicExportingMetricReader({
-  exporter: new FlatMetricExporter({
-    exporter: new OTLPMetricExporter({
-      url: 'https://api.honeycomb.io:443/v1/metrics',
-      headers: { 'x-honeycomb-team': process.env.HONEYCOMB_API_KEY },
-    }),
-  }),
-  exportIntervalMillis: 15_000,
-})
-```
-
-### Dimensional flattening
-
-Metrics with dimensional attributes (like `v8js.heap.space.name`) are flattened by appending the dimension value to the metric name by default. Use `renameDimension` for custom naming:
-
-```ts
-new FlatMetricExporter({
-  exporter: metricExporter,
-  renameDimension: (metricName, dimKey, dimValue) => {
-    if (dimKey === 'v8js.heap.space.name') {
-      const short = dimValue.replace('_space', '')
-      return metricName.replace('.heap.', `.heap_${short}.`)
-    }
-    if (dimKey === 'v8js.gc.type') {
-      return metricName.replace('v8js.gc.', `v8js.gc_${dimValue}.`)
-    }
-    // Return undefined to use default (append _value)
+opinionatedTelemetryInit({
+  serviceName: 'my-service',
+  traceExporter,
+  instrumentations: [new HttpInstrumentation()],
+  metricExporter, // e.g. new OTLPMetricExporter({ ... })
+  metricSources: {
+    http: true, // HTTP server/client metrics (instrumentation-http)
+    runtime: true, // Node runtime metrics (event loop, heap, GC, CPU, memory)
+    processor: false, // processor diagnostics (opin_tel.processor.*)
   },
 })
 ```
 
-### Histogram expansion
+| Source      | Metrics (prefix)                  | Disabling effect                                                    |
+| ----------- | --------------------------------- | ------------------------------------------------------------------- |
+| `http`      | `http.server.*` / `http.client.*` | Adds zero-overhead DROP Views — instruments are never collected     |
+| `runtime`   | `node.*`                          | Stops the runtime collector at the source (no observation overhead) |
+| `processor` | `opin_tel.processor.*`            | Skips registering the processor's diagnostic instruments            |
 
-Histogram metrics are automatically expanded into summary stats and percentiles:
+Each defaults to enabled. `metricSources.runtime`/`processor` compose with the dedicated `runtimeMetrics`/`processorMetrics` options — either one disabling turns the source off. Reach for `metricFilter` when you need to keep part of a source (e.g. drop `node.gc.*` but keep `node.heap.*`).
 
-| Suffix                                          | Description                  |
-| ----------------------------------------------- | ---------------------------- |
-| `.count`                                        | Total number of observations |
-| `.sum`                                          | Sum of all values            |
-| `.min`                                          | Minimum value                |
-| `.max`                                          | Maximum value                |
-| `.avg`                                          | Mean value (sum/count)       |
-| `.p50`, `.p75`, `.p90`, `.p95`, `.p99`, `.p999` | Percentiles (configurable)   |
+### Avoiding duplicate runtime metrics
 
-Customize percentiles via `histogramPercentiles`:
+`getNodeAutoInstrumentations()` bundles `@opentelemetry/instrumentation-runtime-node`, which emits `nodejs.*` / `v8js.*` metrics that **duplicate** the built-in `node.*` runtime metrics. Whenever the built-in runtime metrics are active, opinionated-telemetry automatically **disables that instrumentation** if it finds it in your `instrumentations` array (and logs a one-time warning) — so you don't pay for both.
 
 ```ts
-new FlatMetricExporter({
-  exporter: metricExporter,
-  histogramPercentiles: [0.5, 0.9, 0.95, 0.99],
+opinionatedTelemetryInit({
+  instrumentations: getNodeAutoInstrumentations(), // runtime-node auto-disabled
+  // runtimeMetrics on by default → node.* emitted, nodejs.*/v8js.* suppressed
 })
 ```
 
-### Result
+Control it with `disableRuntimeNodeInstrumentation`:
 
-Instead of N separate metric events, you get a single wide event per collection cycle:
+- **unset (default)** — auto: disabled whenever the built-in runtime metrics are on.
+- **`false`** — keep both (the upstream config can't signal this itself: an explicit `{ enabled: true }` is indistinguishable from the default `enabled: true`, so the opt-out lives here).
+- **`true`** — always disable it, even if you've turned the built-in runtime metrics off.
 
+To use the upstream instrumentation _instead_ of the built-in metrics, set `runtimeMetrics: false` (or `metricSources: { runtime: false }`) — that leaves runtime-node alone.
+
+### Trimming resource attributes from metrics
+
+Honeycomb flattens **resource attributes** (`host.*`, `process.*`, `service.*`, detected by the SDK's resource detectors) onto every metric row. Verbose ones like `process.command_args` or `process.executable.path` are noise on a metric. `metricResourceAttributes` strips them from **metrics only** — traces keep the full resource:
+
+```ts
+opinionatedTelemetryInit({
+  metricExporter, // required — applied on the exporter path
+  metricResourceAttributes: {
+    drop: ['process.command_args', /^process\.executable/],
+    // or keep: ['service.*', 'host.name'] to allow-list instead
+  },
+})
 ```
-timestamp: 2026-03-06T19:31:01Z
-socket.io.open_connections: 1
-v8js.memory.heap_new.used: 220136
-v8js.memory.heap_new.limit: 1048576
-v8js.memory.heap_large_object.used: 23513056
-v8js.gc_major.duration.count: 3
-v8js.gc_major.duration.avg: 0.0105
-v8js.gc_major.duration.p99: 0.015
-...
-```
+
+`honeycombInit` applies a sensible default deny-list ([`DEFAULT_METRIC_RESOURCE_DROP`](src/resource-filtering-metric-exporter.ts) — the verbose `process.command*` / `executable.*` / `owner` / `runtime.description` keys) while keeping `service.*`, `host.*`, `process.pid`, and `process.runtime.{name,version}`. Pass your own (or `{}` to keep everything) to override. Billing-wise this is a clarity/payload win, not a cost one — Honeycomb bills metrics by data points, not attributes.
 
 ## Node Runtime Metrics
 
 OTel's default runtime metrics packages (`@opentelemetry/host-metrics` + `@opentelemetry/instrumentation-runtime-node`) emit 24+ metrics with per-heap-space breakdowns, per-core CPU, per-NIC network stats, and all GC types. Most of this is noise.
 
-`NodeRuntimeMetrics` replaces them with 18 focused, actionable gauges using built-in Node.js APIs, exposed through the OTel Meter API so they flow through the existing `FlatMetricExporter` pipeline.
+`NodeRuntimeMetrics` replaces them with a focused, actionable set using built-in Node.js APIs, exposed through the OTel Meter API so they flow through the normal metric pipeline.
 
 When using the `honeycombInit` entrypoint, runtime metrics are auto-started by default. For standalone use:
 
@@ -755,13 +742,15 @@ import { NodeRuntimeMetrics } from 'opinionated-telemetry/metrics'
 const rtm = new NodeRuntimeMetrics({
   // All options are optional
   prefix: 'node', // metric name prefix (default: 'node')
-  eventLoopDelayResolution: 20, // histogram resolution in ms (default: 20)
+  eventLoopDelayResolution: 20, // event loop delay monitor resolution in ms (default: 20)
+  sampleIntervalMs: 2000, // how often heap/memory/cpu/elu are sampled into histograms (default: 2000)
   enable: {
     // selectively disable groups (all default true)
     eventLoopDelay: true,
+    eventLoopUtilization: true,
     heap: true,
     gc: true,
-    handlesRequests: true,
+    activeResources: true,
     cpu: true,
     memory: true,
   },
@@ -769,35 +758,39 @@ const rtm = new NodeRuntimeMetrics({
 
 rtm.start() // idempotent
 // ... later
-rtm.stop() // idempotent — disconnects observers, disables histogram
+rtm.stop() // idempotent — disconnects observers, clears the sampler
 ```
 
 ### Metrics
 
-| Group      | Metric                         | Source                                           |
-| ---------- | ------------------------------ | ------------------------------------------------ |
-| Event Loop | `node.eventloop.delay.p50`     | `monitorEventLoopDelay().percentile(50)` (ms)    |
-|            | `node.eventloop.delay.p99`     | `.percentile(99)` (ms)                           |
-|            | `node.eventloop.delay.max`     | `.max` (ms)                                      |
-| Heap       | `node.heap.used_mb`            | `process.memoryUsage().heapUsed`                 |
-|            | `node.heap.total_mb`           | `.heapTotal`                                     |
-|            | `node.heap.used_pct`           | `heapUsed / heapTotal * 100`                     |
-| GC         | `node.gc.major.count`          | `PerformanceObserver('gc')`, kind=2 (major) only |
-|            | `node.gc.major.avg_ms`         | average duration per interval                    |
-|            | `node.gc.major.max_ms`         | max duration per interval                        |
-|            | `node.gc.major.p99_ms`         | p99 duration per interval                        |
-| Handles    | `node.handles`                 | `process._getActiveHandles().length`             |
-|            | `node.requests`                | `process._getActiveRequests().length`            |
-| CPU        | `node.cpu.user_pct`            | `process.cpuUsage()` delta                       |
-|            | `node.cpu.system_pct`          | delta                                            |
-|            | `node.cpu.total_pct`           | user + system                                    |
-| Memory     | `node.memory.rss_mb`           | `process.memoryUsage().rss`                      |
-|            | `node.memory.external_mb`      | `.external`                                      |
-|            | `node.memory.array_buffers_mb` | `.arrayBuffers`                                  |
+| Group      | Metric                          | Type      | Source                                                        |
+| ---------- | ------------------------------- | --------- | ------------------------------------------------------------- |
+| Event Loop | `node.eventloop.delay.p50`      | gauge     | `monitorEventLoopDelay().percentile(50)` (ms)                 |
+|            | `node.eventloop.delay.p99`      | gauge     | `.percentile(99)` (ms)                                        |
+|            | `node.eventloop.delay.max`      | gauge     | `.max` (ms)                                                   |
+|            | `node.eventloop.utilization`    | histogram | `performance.eventLoopUtilization()` delta (0-1), sampled     |
+| Heap       | `node.heap.used_mib`            | histogram | `process.memoryUsage().heapUsed`, sampled                     |
+|            | `node.heap.total_mib`           | histogram | `.heapTotal`, sampled                                         |
+|            | `node.heap.used_pct`            | histogram | `heapUsed / v8 heap_size_limit * 100`, sampled                |
+| GC         | `node.gc.major.duration`        | histogram | `PerformanceObserver('gc')` major pauses (ms)                 |
+| Resources  | `node.active_resources`         | gauge     | `process.getActiveResourcesInfo()` counted by `resource.type` |
+| CPU        | `node.cpu.user_pct`             | histogram | `process.cpuUsage()` delta, sampled                           |
+|            | `node.cpu.system_pct`           | histogram | delta, sampled                                                |
+|            | `node.cpu.total_pct`            | histogram | user + system, sampled                                        |
+| Memory     | `node.memory.rss_mib`           | histogram | `process.memoryUsage().rss`, sampled                          |
+|            | `node.memory.external_mib`      | histogram | `.external`, sampled                                          |
+|            | `node.memory.array_buffers_mib` | histogram | `.arrayBuffers`, sampled                                      |
 
-All metrics are observable gauges with zero attributes, so they merge cleanly into a single wide event when using `FlatMetricExporter` with Honeycomb.
+Metrics carry zero attributes (the one exception is `node.active_resources`, which breaks down by `resource.type`) — cheap and easy to query in Honeycomb. Most use native **histograms** so the backend derives count/avg/max/percentiles (and aggregates correctly across instances) instead of us picking stats up front:
 
-Event loop and GC stats are reset after each observation, giving you per-interval measurements. CPU percentages are computed as deltas between observations.
+- **GC pauses** — each major GC duration is recorded as it happens.
+- **Heap, memory, CPU, event-loop utilization** — sampled every `sampleIntervalMs` (default 2s) rather than once per export. A plain gauge only captures the value at the 60s collection tick and would miss an intra-interval spike (heap climbing toward the limit, a CPU/event-loop burst) — often exactly the signal you want. The histogram's **max** is that peak; query `MAX`/`P99`/`AVG` in Honeycomb. (`used_pct` is measured against the V8 `heap_size_limit`, so it's a true "distance to the OOM ceiling".)
+
+Each histogram declares **explicit bucket boundaries scaled to its range** (GC in ms, memory in MiB, percentages 0–100, event-loop utilization 0–1) — OTel's defaults are tuned for second-scale HTTP latency and would, for example, drop every ELU value into one bucket. Override them with OTel Views if our choices don't fit your workload.
+
+The exceptions are gauges: **active resources** is a point-in-time count of what's keeping the event loop alive (by type — handy for spotting leaks like a climbing `TCPSocketWrap`), and **event loop delay** percentiles come straight from libuv's `monitorEventLoopDelay()` histogram (reset each observation) — already aggregated at the C level, so it stays gauges rather than a re-measured OTel histogram.
+
+> **Single reader assumption:** event-loop-delay percentiles and the processor's `.max`/`.min` watermark metrics reset their state on each collection, so they assume one `MetricReader`. With multiple readers (e.g. OTLP + Prometheus) those specific metrics will be split across readers; everything else (the sampled histograms, GC, counters, plain gauges) is unaffected. `opinionatedTelemetryInit` warns if it sees more than one reader.
 
 ## Processor Diagnostic Metrics
 
@@ -811,7 +804,7 @@ opinionatedTelemetryInit({
 })
 ```
 
-Metrics include interval watermarks (current + max + min since last observation) for active spans and traces, snapshot gauges for stuck spans and aggregate groups, and per-interval throughput counters that reset on each collection.
+Metrics include interval watermarks (current + max + min since last observation) for active spans and traces, snapshot gauges for stuck spans and aggregate groups, and monotonic **counters** for throughput (`spans.started`, `spans.exported`, and `spans.dropped` broken down by a `drop.type` attribute) — the backend derives per-interval rates, so there's no lossy client-side reset.
 
 See [docs/PROCESSOR_METRICS.md](docs/PROCESSOR_METRICS.md) for the full metric reference.
 
@@ -873,10 +866,7 @@ import { dropMetrics } from 'opinionated-telemetry/metrics'
 
 opinionatedTelemetryInit({
   metricReaders: [myReader],
-  views: [
-    ...dropMetrics('http.server.*', 'http.client.*', 'node.gc.*'),
-    ...flatMetricExporterViews,
-  ],
+  views: [...dropMetrics('http.server.*', 'http.client.*', 'node.gc.*')],
 })
 ```
 
@@ -887,15 +877,12 @@ This is the most efficient approach (zero collection overhead) but only supports
 For full control, wrap any `PushMetricExporter` with `FilteringMetricExporter`. Supports all pattern types and both `drop`/`allow`:
 
 ```ts
-import {
-  FilteringMetricExporter,
-  FlatMetricExporter,
-} from 'opinionated-telemetry/metrics'
+import { FilteringMetricExporter } from 'opinionated-telemetry/metrics'
 import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics'
 
 const reader = new PeriodicExportingMetricReader({
   exporter: new FilteringMetricExporter({
-    exporter: new FlatMetricExporter({ exporter: otlpExporter }),
+    exporter: otlpExporter,
     drop: [/^node\.gc/],
     allow: ['opin_tel.*', 'node.heap.*', 'node.cpu.*'],
   }),
@@ -1140,6 +1127,16 @@ Patches `Bull.prototype` to trace job processing with span links connecting prod
 - **`.process()`** creates a new root span with a span link back to the enqueuing span
 - **`.on()`** wraps async event handlers with spans for lifecycle events
 
+It also emits **queue metrics** (unless `metrics: false`):
+
+| Metric                | Type      | Attributes                                                          | Meaning                                                                              |
+| --------------------- | --------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `bull.queue.jobs`     | gauge     | `bull.queue.name`, `bull.job.state` (waiting/active/delayed/paused) | Current backlog via `getJobCounts()` (one Redis round-trip per queue per collection) |
+| `bull.jobs.processed` | counter   | `bull.queue.name`, `bull.job.status` (completed/failed)             | Processing attempts — throughput + error rate                                        |
+| `bull.job.duration`   | histogram | `bull.queue.name`                                                   | Job processing time (ms)                                                             |
+
+Queues are discovered as they're used via the patched `.add()`/`.process()`. (Throughput is a real counter rather than `getJobCounts()`'s `completed`/`failed`, which are trimmable set sizes — so the gauge tracks only pending states.)
+
 Call before any queues are created. Pass the Bull constructor (not an instance).
 
 ```ts
@@ -1156,12 +1153,14 @@ otelInitBull(Bull, {
 | -------------- | ---------------------------------------------------------------------------------------------- |
 | `tracerName`   | Tracer name for bull spans. Default: `'bull-otel'`                                             |
 | `tracedEvents` | Events to wrap with spans on `.on()`. Default: `['completed', 'stalled', 'failed', 'waiting']` |
+| `meterName`    | Meter name for queue metrics. Default: `'bull-otel'`                                           |
+| `metrics`      | Emit queue depth/throughput/duration metrics. Default: `true`                                  |
 
 ### Socket.IO
 
 Two functions for Socket.IO observability:
 
-- **`otelInitSocketIo(io)`** sets up an observable gauge tracking open connection count (`socket.io.open_connections`)
+- **`otelInitSocketIo(io)`** sets up observable gauges for open connections — `socket.io.open_connections` (current) and `socket.io.open_connections.max` (peak since last observation, to catch reconnect spikes a snapshot misses)
 - **`otelPatchSocketIo(socket, config)`** patches a socket's `.on()` to inject baggage context into all event handlers, so spans created during socket events inherit user/session context
 
 ```ts

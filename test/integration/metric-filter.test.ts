@@ -81,8 +81,8 @@ describe('metricFilter integration', () => {
   })
 
   it('metricFilter.drop with glob works alongside other views', async () => {
-    // Simulates the honeycomb case: flatMetricExporterViews create streams
-    // for http.* metrics, and metricFilter should still drop them
+    // A user-provided view creates a stream for an http.* metric; a DROP view
+    // can't override it, so metricFilter must still drop it at the exporter level
     const mockExporter = createMockMetricExporter()
     const { shutdown } = opinionatedTelemetryInit({
       serviceName: 'test',
@@ -110,7 +110,7 @@ describe('metricFilter integration', () => {
     const httpMetric = meter.createObservableGauge(
       'http.server.request.duration',
     )
-    const nodeMetric = meter.createObservableGauge('node.heap.used_mb')
+    const nodeMetric = meter.createObservableGauge('node.heap.used_mib')
     meter.addBatchObservableCallback(
       (observer) => {
         observer.observe(httpMetric, 100)
@@ -126,7 +126,7 @@ describe('metricFilter integration', () => {
     const allNames = mockExporter.exported.flatMap((rm) =>
       rm.scopeMetrics.flatMap((sm) => sm.metrics.map((m) => m.descriptor.name)),
     )
-    expect(allNames).toContain('node.heap.used_mb')
+    expect(allNames).toContain('node.heap.used_mib')
     expect(allNames).not.toContain('http.server.request.duration')
 
     await shutdown()

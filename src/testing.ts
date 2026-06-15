@@ -431,6 +431,34 @@ export class TestMetricExporter implements PushMetricExporter {
       )
     }
   }
+
+  /**
+   * Assert a histogram metric exists and return its latest data point value
+   * (`{ count, sum, min, max }`). For the sampled runtime histograms
+   * (heap/memory/cpu/elu, gc) that `assertMetricValue` (scalar-only) can't check.
+   */
+  assertHistogram(name: string): {
+    count: number
+    sum?: number
+    min?: number
+    max?: number
+  } {
+    const points = this.assertMetricExists(name)
+    const value = points[points.length - 1].value as {
+      count?: number
+      sum?: number
+      min?: number
+      max?: number
+    }
+    if (
+      value == null ||
+      typeof value !== 'object' ||
+      typeof value.count !== 'number'
+    ) {
+      throw new Error(`Metric "${name}" is not a histogram`)
+    }
+    return value as { count: number; sum?: number; min?: number; max?: number }
+  }
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────
