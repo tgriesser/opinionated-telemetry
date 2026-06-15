@@ -1,6 +1,6 @@
 # Processor Diagnostic Metrics
 
-The `FilteringSpanProcessor` exposes its internal state as OTel observable gauges via `registerMetrics(meter)`. These metrics give you visibility into the telemetry pipeline itself — useful for detecting span leaks, understanding throughput, and diagnosing sampling behavior.
+The `FilteringSpanProcessor` exposes its internal state as OTel metrics via `registerMetrics(meter)` — observable gauges for levels/watermarks and observable counters for throughput. These give you visibility into the telemetry pipeline itself — useful for detecting span leaks, understanding throughput, and diagnosing sampling behavior.
 
 Enabled by default when using `opinionatedTelemetryInit`. Set `processorMetrics: false` to disable.
 
@@ -37,21 +37,27 @@ Point-in-time values read at each observation.
 | `opin_tel.processor.aggregate_groups`         | Active span aggregation groups awaiting emission                      |
 | `opin_tel.processor.conditional_drop_buffers` | Spans buffered waiting for a parent's `shouldDrop` decision           |
 
-## Interval throughput counters
+## Throughput counters
 
-Count of events since the last observation. Reset to 0 after each collection.
+Monotonic **observable counters** — cumulative totals over the process lifetime. The backend derives per-interval counts and rates from the delta between collections (no lossy client-side reset). Query them with `RATE_MAX` / `RATE_AVG` in Honeycomb.
 
-| Metric                                         | Description                                               |
-| ---------------------------------------------- | --------------------------------------------------------- |
-| `opin_tel.processor.spans.started`             | Spans that entered `onStart`                              |
-| `opin_tel.processor.spans.exported`            | Spans forwarded to the wrapped exporter                   |
-| `opin_tel.processor.spans.dropped.sync`        | Spans dropped by sync span detection                      |
-| `opin_tel.processor.spans.dropped.conditional` | Spans dropped by `shouldDrop` callbacks                   |
-| `opin_tel.processor.spans.dropped.aggregated`  | Spans consumed by aggregation (not individually exported) |
-| `opin_tel.processor.spans.dropped.head`        | Spans dropped by head sampling                            |
-| `opin_tel.processor.spans.dropped.tail`        | Spans dropped by tail sampling                            |
-| `opin_tel.processor.spans.dropped.burst`       | Spans dropped by burst protection                         |
-| `opin_tel.processor.spans.dropped.stuck`       | Spans evicted via stuck span `'drop'` action              |
+| Metric                              | Description                                                     |
+| ----------------------------------- | --------------------------------------------------------------- |
+| `opin_tel.processor.spans.started`  | Spans that entered `onStart`                                    |
+| `opin_tel.processor.spans.exported` | Spans forwarded to the wrapped exporter                         |
+| `opin_tel.processor.spans.dropped`  | Spans dropped, broken down by the `drop.type` attribute (below) |
+
+`opin_tel.processor.spans.dropped` carries a **`drop.type`** attribute — query the total with `SUM`, or break down by reason with `GROUP BY drop.type`:
+
+| `drop.type`   | Reason                                              |
+| ------------- | --------------------------------------------------- |
+| `sync`        | Sync span detection                                 |
+| `conditional` | `shouldDrop` callbacks                              |
+| `aggregated`  | Consumed by aggregation (not individually exported) |
+| `head`        | Head sampling                                       |
+| `tail`        | Tail sampling                                       |
+| `burst`       | Burst protection                                    |
+| `stuck`       | Evicted via stuck span `'drop'` action              |
 
 ## What to watch for
 

@@ -458,5 +458,38 @@ describe('TestMetricExporter', () => {
         /expected 99, got 42/,
       )
     })
+
+    it('assertHistogram returns the histogram value and rejects non-histograms', () => {
+      const histResourceMetrics = {
+        resource: { attributes: {}, merge: () => ({}) },
+        scopeMetrics: [
+          {
+            scope: { name: 'test' },
+            metrics: [
+              {
+                descriptor: { name: 'gc', description: '', unit: 'ms' },
+                dataPoints: [
+                  {
+                    attributes: {},
+                    value: { count: 3, sum: 30, min: 5, max: 20, buckets: {} },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      } as never
+      exporter.export(histResourceMetrics, () => {})
+      exporter.export(
+        fakeResourceMetrics([{ name: 'cpu', value: 42 }]),
+        () => {},
+      )
+
+      const h = exporter.assertHistogram('gc')
+      expect(h.count).toBe(3)
+      expect(h.max).toBe(20)
+      // a scalar gauge is not a histogram
+      expect(() => exporter.assertHistogram('cpu')).toThrow(/not a histogram/)
+    })
   })
 })

@@ -19,7 +19,48 @@ import {
   FilteringMetricExporter,
   dropMetrics,
 } from './filtering-metric-exporter.js'
+import { ResourceFilteringMetricExporter } from './resource-filtering-metric-exporter.js'
+import type { PushMetricExporter } from '@opentelemetry/sdk-metrics'
+import type { Instrumentation } from '@opentelemetry/instrumentation'
 import type { OpinionatedTelemetryConfig } from './types.js'
+
+const RUNTIME_NODE_INSTRUMENTATION =
+  '@opentelemetry/instrumentation-runtime-node'
+
+/**
+ * Disable and remove `instrumentation-runtime-node` from the list. Its
+ * `nodejs.*` / `v8js.*` metrics duplicate the built-in `node.*` runtime metrics.
+ * Removal (not just `disable()`) is required: `registerInstrumentations`
+ * re-enables any instrumentation whose config is disabled when the SDK starts,
+ * so the only way to keep it off is to never hand it to the SDK.
+ */
+function pruneRuntimeNodeInstrumentation(
+  instrumentations: Instrumentation[],
+  logger: { warn(msg: string): void },
+  warn: boolean,
+): Instrumentation[] {
+  const flat = instrumentations.flat()
+  const remaining = flat.filter(
+    (inst) => inst.instrumentationName !== RUNTIME_NODE_INSTRUMENTATION,
+  )
+  if (remaining.length === flat.length) return instrumentations
+
+  for (const inst of flat) {
+    if (inst.instrumentationName === RUNTIME_NODE_INSTRUMENTATION) {
+      inst.disable()
+    }
+  }
+  // Only warn when we disabled it as a side effect (auto). An explicit
+  // `disableRuntimeNodeInstrumentation: true` is an intentional opt-in — no nag.
+  if (warn) {
+    logger.warn(
+      `[opin_tel] Disabled ${RUNTIME_NODE_INSTRUMENTATION}: its nodejs.*/v8js.* metrics ` +
+        'duplicate the built-in node.* runtime metrics. Set runtimeMetrics:false to use it ' +
+        'instead, or disableRuntimeNodeInstrumentation:false to keep both.',
+    )
+  }
+  return remaining
+}
 
 /** Opinionated BatchSpanProcessor defaults: flush more frequently, shorter timeout */
 const DEFAULT_BATCH_CONFIG = {
@@ -48,7 +89,12 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     metricExporter,
     metricExportInterval,
     metricFilter,
+    metricSources,
+    metricResourceAttributes,
+    disableRuntimeNodeInstrumentation,
     resourceDetectors,
+    autoDetectResources,
+    idGenerator,
     spanLimits = DEFAULT_SPAN_LIMITS,
     shutdownSignal = 'SIGTERM',
     instrumentations,
@@ -60,6 +106,9 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     views: userViews,
     ...processorConfig
   } = config
+
+  const runtimeMetricsEnabled =
+    metricSources?.runtime !== false && runtimeMetricsConfig !== false
 
   const logger = processorConfig.logger ?? console
 
@@ -118,11 +167,17 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
   let views = userViews
   let finalMetricReaders = metricReaders
 
+  // Source toggle: disabling http drops its instrument streams with zero
+  // collection overhead (runtime/processor are stopped at the source below).
+  if (metricSources?.http === false) {
+    views = [...(views ?? []), ...dropMetrics('http.server.*', 'http.client.*')]
+  }
+
   if (metricFilter) {
     if (metricExporter) {
       // metricExporter path: always use FilteringMetricExporter for all patterns.
-      // DROP views can be bypassed when other views (e.g. flatMetricExporterViews)
-      // match the same instruments and create their own streams.
+      // DROP views can be bypassed when other views match the same instruments
+      // and create their own streams.
     } else {
       // metricReaders path: DROP views are the only option for string patterns
       const stringDrops = (metricFilter.drop ?? []).filter(
@@ -145,12 +200,16 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     }
   }
 
+  const hasResourceFilter =
+    (metricResourceAttributes?.drop?.length ?? 0) > 0 ||
+    (metricResourceAttributes?.keep?.length ?? 0) > 0
+
   if (metricExporter) {
     const hasFilter =
       (metricFilter?.drop?.length ?? 0) > 0 ||
       (metricFilter?.allow?.length ?? 0) > 0
 
-    const exporter = hasFilter
+    let exporter: PushMetricExporter = hasFilter
       ? new FilteringMetricExporter({
           exporter: metricExporter,
           drop: metricFilter?.drop,
@@ -158,13 +217,46 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
         })
       : metricExporter
 
+    if (hasResourceFilter) {
+      exporter = new ResourceFilteringMetricExporter({
+        exporter,
+        drop: metricResourceAttributes?.drop,
+        keep: metricResourceAttributes?.keep,
+      })
+    }
+
     finalMetricReaders = [
       new PeriodicExportingMetricReader({
         exporter,
         exportIntervalMillis: metricExportInterval ?? 60_000,
       }),
     ]
+  } else if (hasResourceFilter) {
+    logger.warn(
+      '[opin_tel] metricResourceAttributes requires the metricExporter path (not metricReaders). ' +
+        'Wrap your reader with ResourceFilteringMetricExporter directly for full control.',
+    )
   }
+
+  // Event-loop-delay percentiles and the processor's watermark metrics reset
+  // their state on each collection, so they assume a single metric reader. With
+  // more than one, whichever reader collects first consumes the interval.
+  if ((finalMetricReaders?.length ?? 0) > 1) {
+    logger.warn(
+      '[opin_tel] Multiple metric readers configured. Event-loop-delay percentiles ' +
+        '(node.eventloop.delay.*) and processor watermark metrics (*.max/*.min) reset ' +
+        'on collection and will be inaccurate across readers; other metrics are unaffected.',
+    )
+  }
+
+  const finalInstrumentations =
+    (disableRuntimeNodeInstrumentation ?? runtimeMetricsEnabled)
+      ? pruneRuntimeNodeInstrumentation(
+          instrumentations,
+          logger,
+          disableRuntimeNodeInstrumentation !== true,
+        )
+      : instrumentations
 
   const sdk = new NodeSDK({
     resource: resourceFromAttributes({
@@ -172,11 +264,13 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
       ...resourceAttributes,
     }),
     resourceDetectors,
+    autoDetectResources,
+    idGenerator,
     spanLimits,
     spanProcessors,
     textMapPropagator,
     metricReaders: finalMetricReaders,
-    instrumentations,
+    instrumentations: finalInstrumentations,
     views,
   })
 
@@ -192,7 +286,7 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
   // a real meter — the OTel metrics API has no proxy pattern, so getMeter()
   // before the global MeterProvider is registered returns a NoopMeter.
   let runtimeMetrics: NodeRuntimeMetrics | undefined
-  if (runtimeMetricsConfig !== false) {
+  if (runtimeMetricsEnabled) {
     runtimeMetrics = new NodeRuntimeMetrics(
       typeof runtimeMetricsConfig === 'object' ? runtimeMetricsConfig : {},
     )
@@ -200,7 +294,7 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
   }
 
   // Processor diagnostic metrics (active spans, tail buffer, throughput, drops)
-  if (processorMetrics !== false) {
+  if (metricSources?.processor !== false && processorMetrics !== false) {
     filteringProcessor.registerMetrics(metrics.getMeter('opin_tel.processor'))
   }
 

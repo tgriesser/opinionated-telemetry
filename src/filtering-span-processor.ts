@@ -266,7 +266,8 @@ export class FilteringSpanProcessor implements SpanProcessor {
   private _iTailSpansMin = 0
   // Running counter for total spans across all tail buffer entries
   private _tailBufferSpanCount = 0
-  // Throughput counters (reset to 0 on observation)
+  // Monotonic throughput totals, reported via observable counters (the SDK
+  // derives per-interval deltas; we never reset them ourselves).
   private _iSpansStarted = 0
   private _iSpansExported = 0
   private _iDroppedSync = 0
@@ -794,32 +795,19 @@ export class FilteringSpanProcessor implements SpanProcessor {
       `${prefix}.conditional_drop_buffers`,
     )
 
-    // ── Interval throughput counters ──
-    const spansStarted = meter.createObservableGauge(`${prefix}.spans.started`)
-    const spansExported = meter.createObservableGauge(
+    // ── Throughput counters (monotonic sums; backend computes rates) ──
+    const spansStarted = meter.createObservableCounter(
+      `${prefix}.spans.started`,
+    )
+    const spansExported = meter.createObservableCounter(
       `${prefix}.spans.exported`,
     )
-    const droppedSync = meter.createObservableGauge(
-      `${prefix}.spans.dropped.sync`,
-    )
-    const droppedConditional = meter.createObservableGauge(
-      `${prefix}.spans.dropped.conditional`,
-    )
-    const droppedAggregated = meter.createObservableGauge(
-      `${prefix}.spans.dropped.aggregated`,
-    )
-    const droppedHead = meter.createObservableGauge(
-      `${prefix}.spans.dropped.head`,
-    )
-    const droppedTail = meter.createObservableGauge(
-      `${prefix}.spans.dropped.tail`,
-    )
-    const droppedBurst = meter.createObservableGauge(
-      `${prefix}.spans.dropped.burst`,
-    )
-    const droppedStuck = meter.createObservableGauge(
-      `${prefix}.spans.dropped.stuck`,
-    )
+    // Dropped spans, broken down by reason via a `drop.type` attribute
+    // (sync/conditional/aggregated/head/tail/burst/stuck) — query the total with
+    // SUM, or break down with GROUP BY drop.type.
+    const dropped = meter.createObservableCounter(`${prefix}.spans.dropped`, {
+      description: 'Spans dropped by the processor, by reason (drop.type)',
+    })
 
     meter.addBatchObservableCallback(
       (observer) => {
@@ -864,24 +852,17 @@ export class FilteringSpanProcessor implements SpanProcessor {
         // Throughput counters
         observer.observe(spansStarted, this._iSpansStarted)
         observer.observe(spansExported, this._iSpansExported)
-        observer.observe(droppedSync, this._iDroppedSync)
-        observer.observe(droppedConditional, this._iDroppedConditional)
-        observer.observe(droppedAggregated, this._iDroppedAggregated)
-        observer.observe(droppedHead, this._iDroppedHead)
-        observer.observe(droppedTail, this._iDroppedTail)
-        observer.observe(droppedBurst, this._iDroppedBurst)
-        observer.observe(droppedStuck, this._iDroppedStuck)
-
-        // Reset interval counters
-        this._iSpansStarted = 0
-        this._iSpansExported = 0
-        this._iDroppedSync = 0
-        this._iDroppedConditional = 0
-        this._iDroppedAggregated = 0
-        this._iDroppedHead = 0
-        this._iDroppedTail = 0
-        this._iDroppedBurst = 0
-        this._iDroppedStuck = 0
+        observer.observe(dropped, this._iDroppedSync, { 'drop.type': 'sync' })
+        observer.observe(dropped, this._iDroppedConditional, {
+          'drop.type': 'conditional',
+        })
+        observer.observe(dropped, this._iDroppedAggregated, {
+          'drop.type': 'aggregated',
+        })
+        observer.observe(dropped, this._iDroppedHead, { 'drop.type': 'head' })
+        observer.observe(dropped, this._iDroppedTail, { 'drop.type': 'tail' })
+        observer.observe(dropped, this._iDroppedBurst, { 'drop.type': 'burst' })
+        observer.observe(dropped, this._iDroppedStuck, { 'drop.type': 'stuck' })
       },
       [
         activeSpans,
@@ -901,13 +882,7 @@ export class FilteringSpanProcessor implements SpanProcessor {
         conditionalDropBuffers,
         spansStarted,
         spansExported,
-        droppedSync,
-        droppedConditional,
-        droppedAggregated,
-        droppedHead,
-        droppedTail,
-        droppedBurst,
-        droppedStuck,
+        dropped,
       ],
     )
   }

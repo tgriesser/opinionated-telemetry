@@ -98,6 +98,9 @@ export class FilteringMetricExporter implements PushMetricExporter {
     return this._exporter.shutdown()
   }
 
+  // Delegate to the wrapped exporter so its temporality preference (e.g. the
+  // delta default honeycombInit sets) reaches the reader, which only queries the
+  // outermost exporter. Fall back to the OTel default if it expresses none.
   selectAggregationTemporality(
     instrumentType: Parameters<
       NonNullable<PushMetricExporter['selectAggregationTemporality']>
@@ -105,7 +108,7 @@ export class FilteringMetricExporter implements PushMetricExporter {
   ): AggregationTemporality {
     return (
       this._exporter.selectAggregationTemporality?.(instrumentType) ??
-      AggregationTemporality.DELTA
+      AggregationTemporality.CUMULATIVE
     )
   }
 
@@ -130,7 +133,7 @@ export class FilteringMetricExporter implements PushMetricExporter {
  * @example
  * ```ts
  * opinionatedTelemetryInit({
- *   views: [...dropMetrics('http.server.*', 'http.client.*'), ...flatMetricExporterViews],
+ *   views: [...dropMetrics('http.server.*', 'http.client.*')],
  * })
  * ```
  */

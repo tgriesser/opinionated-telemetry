@@ -44,6 +44,26 @@ async function getMetricValues(
   return result
 }
 
+/** drop.type → value map for the collapsed spans.dropped counter */
+async function getDropCounts(
+  meterSetup: ReturnType<typeof createTestMeterProvider>,
+) {
+  const resourceMetrics = await meterSetup.collectAndGetMetrics()
+  const result = new Map<string, number>()
+  for (const rm of resourceMetrics) {
+    for (const sm of rm.scopeMetrics) {
+      for (const m of sm.metrics) {
+        if (m.descriptor.name === 'opin_tel.processor.spans.dropped') {
+          for (const dp of m.dataPoints) {
+            result.set(dp.attributes['drop.type'] as string, dp.value as number)
+          }
+        }
+      }
+    }
+  }
+  return result
+}
+
 describe('processor meta metrics', () => {
   let meterSetup: ReturnType<typeof createTestMeterProvider>
 
@@ -82,13 +102,7 @@ describe('processor meta metrics', () => {
       'opin_tel.processor.conditional_drop_buffers',
       'opin_tel.processor.spans.started',
       'opin_tel.processor.spans.exported',
-      'opin_tel.processor.spans.dropped.sync',
-      'opin_tel.processor.spans.dropped.conditional',
-      'opin_tel.processor.spans.dropped.aggregated',
-      'opin_tel.processor.spans.dropped.head',
-      'opin_tel.processor.spans.dropped.tail',
-      'opin_tel.processor.spans.dropped.burst',
-      'opin_tel.processor.spans.dropped.stuck',
+      'opin_tel.processor.spans.dropped', // broken down by drop.type attribute
     ]
 
     for (const name of expected) {
@@ -148,7 +162,7 @@ describe('processor meta metrics', () => {
     await shutdown()
   })
 
-  it('tracks throughput counters and resets on observation', async () => {
+  it('tracks throughput counters as cumulative totals', async () => {
     const { tracer, processor, shutdown } = createTestProvider({
       dropSyncSpans: true,
       stuckSpanDetection: false,
@@ -166,13 +180,23 @@ describe('processor meta metrics', () => {
     const vals = await getMetricValues(meterSetup)
     expect(vals.get('opin_tel.processor.spans.started')).toBe(2)
     expect(vals.get('opin_tel.processor.spans.exported')).toBe(1) // only root
-    expect(vals.get('opin_tel.processor.spans.dropped.sync')).toBe(1)
+    expect((await getDropCounts(meterSetup)).get('sync')).toBe(1)
 
-    // Second observation — counters should have reset
+    // Counters are monotonic totals now — a second observation with no new
+    // activity keeps the cumulative value (the backend derives per-interval rates).
     const vals2 = await getMetricValues(meterSetup)
-    expect(vals2.get('opin_tel.processor.spans.started')).toBe(0)
-    expect(vals2.get('opin_tel.processor.spans.exported')).toBe(0)
-    expect(vals2.get('opin_tel.processor.spans.dropped.sync')).toBe(0)
+    expect(vals2.get('opin_tel.processor.spans.started')).toBe(2)
+    expect(vals2.get('opin_tel.processor.spans.exported')).toBe(1)
+    expect((await getDropCounts(meterSetup)).get('sync')).toBe(1)
+
+    // New activity increments the totals
+    const root2 = tracer.startSpan('root2')
+    await nextTick()
+    root2.end()
+
+    const vals3 = await getMetricValues(meterSetup)
+    expect(vals3.get('opin_tel.processor.spans.started')).toBe(3)
+    expect(vals3.get('opin_tel.processor.spans.exported')).toBe(2)
 
     await shutdown()
   })
@@ -230,7 +254,7 @@ describe('processor meta metrics', () => {
     expect(vals.get('opin_tel.processor.spans.started')).toBe(2)
     // With rate=1000000, almost certainly dropped
     expect(
-      vals.get('opin_tel.processor.spans.dropped.head')!,
+      (await getDropCounts(meterSetup)).get('head')!,
     ).toBeGreaterThanOrEqual(1)
 
     await shutdown()
