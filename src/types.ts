@@ -102,7 +102,6 @@ type NodeSDKConfig = Partial<
     | 'metricReaders'
     | 'views'
     | 'contextManager'
-    | 'logRecordProcessor'
     | 'logRecordProcessors'
   >
 >
