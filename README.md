@@ -1123,8 +1123,8 @@ otelInitGraphql(schema, {
 
 Patches `Bull.prototype` to trace job processing with span links connecting producers to consumers across separate traces. This avoids creating artificially long parent-child traces for async job queues.
 
-- **`.add()`** captures the current span context and stores it in the job data
-- **`.process()`** creates a new root span with a span link back to the enqueuing span
+- **`.add()`** captures the current span context and stores it in the job data under `__otelLink` (disable with `addJobLink: false`)
+- **`.process()`** creates a new root span with a span link back to the enqueuing span, and strips `__otelLink` back out of the job data so your processor receives the payload it enqueued
 - **`.on()`** wraps async event handlers with spans for lifecycle events
 
 It also emits **queue metrics** (unless `metrics: false`):
@@ -1149,12 +1149,13 @@ otelInitBull(Bull, {
 })
 ```
 
-| Option         | Description                                                                                    |
-| -------------- | ---------------------------------------------------------------------------------------------- |
-| `tracerName`   | Tracer name for bull spans. Default: `'bull-otel'`                                             |
-| `tracedEvents` | Events to wrap with spans on `.on()`. Default: `['completed', 'stalled', 'failed', 'waiting']` |
-| `meterName`    | Meter name for queue metrics. Default: `'bull-otel'`                                           |
-| `metrics`      | Emit queue depth/throughput/duration metrics. Default: `true`                                  |
+| Option         | Description                                                                                     |
+| -------------- | ----------------------------------------------------------------------------------------------- |
+| `tracerName`   | Tracer name for bull spans. Default: `'bull-otel'`                                              |
+| `tracedEvents` | Events to wrap with spans on `.on()`. Default: `['completed', 'stalled', 'failed', 'waiting']`  |
+| `meterName`    | Meter name for queue metrics. Default: `'bull-otel'`                                            |
+| `metrics`      | Emit queue depth/throughput/duration metrics. Default: `true`                                   |
+| `addJobLink`   | Inject `__otelLink` into job data on `.add()` to link producer/consumer traces. Default: `true` |
 
 ### Socket.IO
 

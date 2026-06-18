@@ -101,6 +101,9 @@ type NodeSDKConfig = Partial<
     | 'autoDetectResources'
     | 'metricReaders'
     | 'views'
+    | 'contextManager'
+    | 'logRecordProcessor'
+    | 'logRecordProcessors'
   >
 >
 

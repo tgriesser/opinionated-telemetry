@@ -21,6 +21,11 @@ export interface BullOtelConfig {
   meterName?: string
   /** Emit queue depth/throughput/duration metrics. Default: true */
   metrics?: boolean
+  /**
+   * Whether to add the __otelLink to the payload to link bull jobs w/ traces
+   * @default {true}
+   */
+  addJobLink?: boolean
 }
 
 const DEFAULT_TRACED_EVENTS = new Set([
@@ -41,6 +46,7 @@ const DEFAULT_TRACED_EVENTS = new Set([
  * .on() wraps async event handlers for lifecycle events with spans.
  */
 export function otelInitBull(Bull: any, config?: BullOtelConfig): void {
+  const addJobLink = Boolean(config?.addJobLink ?? true)
   const tracerName = config?.tracerName ?? 'bull-otel'
   const tracedEvents = config?.tracedEvents
     ? new Set(config.tracedEvents)
@@ -113,13 +119,14 @@ export function otelInitBull(Bull: any, config?: BullOtelConfig): void {
         if (metricsEnabled && bullJob.queue) queues.add(bullJob.queue)
 
         const links: Link[] = []
-        const otelLink = bullJob.data?.__otelLink
-        if (otelLink) {
+        const { __otelLink, ...originalJobData } = bullJob.data ?? {}
+        if (__otelLink) {
+          bullJob.data = originalJobData
           links.push({
             context: {
-              traceId: otelLink.traceId,
-              spanId: otelLink.spanId,
-              traceFlags: otelLink.traceFlags ?? 1,
+              traceId: __otelLink.traceId,
+              spanId: __otelLink.spanId,
+              traceFlags: __otelLink.traceFlags ?? 1,
             },
             attributes: { 'link.source': 'bull.add' },
           })
@@ -178,22 +185,25 @@ export function otelInitBull(Bull: any, config?: BullOtelConfig): void {
   Bull.prototype.add = function patchedAdd(this: any, ...args: any[]) {
     if (metricsEnabled) queues.add(this)
     const currentSpan = trace.getActiveSpan()
-    const link = currentSpan
-      ? {
-          traceId: currentSpan.spanContext().traceId,
-          spanId: currentSpan.spanContext().spanId,
-          traceFlags: currentSpan.spanContext().traceFlags,
-        }
-      : undefined
+    const link =
+      currentSpan && addJobLink
+        ? {
+            __otelLink: {
+              traceId: currentSpan.spanContext().traceId,
+              spanId: currentSpan.spanContext().spanId,
+              traceFlags: currentSpan.spanContext().traceFlags,
+            },
+          }
+        : undefined
 
     if (typeof args[0] === 'string') {
       // add(name, data, opts?)
       const [name, data, opts] = args
-      return originalAdd.call(this, name, { ...data, __otelLink: link }, opts)
+      return originalAdd.call(this, name, { ...data, ...link }, opts)
     }
     // add(data, opts?)
     const [data, opts] = args
-    return originalAdd.call(this, { ...data, __otelLink: link }, opts)
+    return originalAdd.call(this, { ...data, ...link }, opts)
   }
 
   Bull.prototype.on = function patchedOn(
