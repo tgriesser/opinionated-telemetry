@@ -315,5 +315,6 @@ export function opinionatedTelemetryInit(config: OpinionatedTelemetryConfig) {
     runtimeMetrics,
     getTracer: (name = serviceName) => trace.getTracer(name),
     shutdown,
+    filteringProcessor,
   }
 }

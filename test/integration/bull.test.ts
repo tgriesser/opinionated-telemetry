@@ -71,6 +71,43 @@ describe('otelInitBull', () => {
     provider.shutdown()
   })
 
+  it('does not inject __otelLink when addJobLink is false', () => {
+    const { tracer, provider } = createSimpleProvider()
+    trace.setGlobalTracerProvider(provider)
+    const Bull = createMockBull()
+    otelInitBull(Bull, { addJobLink: false })
+
+    const queue = new (Bull as any)()
+
+    let addResult: any
+    tracer.startActiveSpan('enqueue', (span) => {
+      addResult = queue.add('job-name', { payload: 'data' }, {})
+      span.end()
+    })
+
+    expect('__otelLink' in addResult).toBe(false)
+    expect(addResult.payload).toBe('data')
+
+    provider.shutdown()
+  })
+
+  it('does not inject __otelLink when there is no active span', () => {
+    const { provider } = createSimpleProvider()
+    trace.setGlobalTracerProvider(provider)
+    const Bull = createMockBull()
+    otelInitBull(Bull)
+
+    const queue = new (Bull as any)()
+
+    // No active span — the key should be absent, not set to undefined
+    const addResult = queue.add('job-name', { payload: 'data' }, {})
+
+    expect('__otelLink' in addResult).toBe(false)
+    expect(addResult.payload).toBe('data')
+
+    provider.shutdown()
+  })
+
   it('handles add(data, opts) signature (no name)', () => {
     const { tracer, provider } = createSimpleProvider()
     trace.setGlobalTracerProvider(provider)
@@ -206,6 +243,49 @@ describe('otelInitBull', () => {
     expect(span.attributes['bull.job.attempts']).toBe(2)
     expect(span.links.length).toBe(1)
     expect(span.links[0].attributes!['link.source']).toBe('bull.add')
+
+    await provider.shutdown()
+  })
+
+  it('process: strips __otelLink from job data before invoking the processor', async () => {
+    const { provider } = createSimpleProvider()
+    trace.setGlobalTracerProvider(provider)
+    const Bull = createMockBull()
+
+    let capturedProcessor: any
+    Bull.prototype.process = function (fn: any) {
+      capturedProcessor = fn
+    }
+
+    otelInitBull(Bull)
+    const queue = new (Bull as any)()
+
+    let seenData: any
+    queue.process(async function myProcessor(job: any) {
+      seenData = job.data
+      return 'result'
+    })
+
+    const mockJob = {
+      id: '123',
+      queue: { name: 'test-queue' },
+      attemptsMade: 0,
+      data: {
+        payload: 'real-data',
+        __otelLink: {
+          traceId: 'a'.repeat(32),
+          spanId: 'b'.repeat(16),
+          traceFlags: 1,
+        },
+      },
+    }
+
+    await capturedProcessor(mockJob)
+
+    // The processor should see its original payload without the internal link
+    expect(seenData).toEqual({ payload: 'real-data' })
+    expect('__otelLink' in seenData).toBe(false)
+    expect('__otelLink' in mockJob.data).toBe(false)
 
     await provider.shutdown()
   })
