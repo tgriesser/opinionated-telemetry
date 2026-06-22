@@ -22,6 +22,13 @@ export interface KnexOtelConfig {
   hashFn?: (input: any) => string
   /** Custom function to sanitize an array of bindings into a string */
   sanitizeBindingsFn?: (bindings: any[]) => string
+  /**
+   * Custom function for sanitizing an individual binding value (including
+   * nested array/object elements). Return a string to override the default
+   * sanitization; return anything else (e.g. `undefined`) to fall through to
+   * the built-in behavior.
+   */
+  sanitizeBindingFn?: (value: any) => string | undefined
   /** Capture sanitized bindings. Default: true */
   captureBindings?: boolean
   /** Capture pool stats. Default: true */
@@ -74,13 +81,25 @@ export function defaultHash(input: any): string {
   return crc32(JSON.stringify(input)).toString(16)
 }
 
-export function sanitizeBinding(value: any): any {
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+export function sanitizeBinding(
+  value: any,
+  sanitizer?: typeof sanitizeBinding,
+): any {
+  if (typeof sanitizer === 'function') {
+    const sanitized = sanitizer(value)
+    if (typeof sanitized === 'string') {
+      return sanitized
+    }
+  }
   switch (typeof value) {
     case 'boolean':
     case 'number':
       return value
     case 'string':
-      return `string<${value.length}>`
+      return UUID_RE.test(value) ? value : `string<${value.length}>`
     case 'bigint':
     case 'symbol':
       return `${typeof value}<<${value.toString()}>>`
@@ -91,13 +110,18 @@ export function sanitizeBinding(value: any): any {
       if (value === null) {
         return null
       }
+      if (value instanceof Date) {
+        return Number.isNaN(value.getTime())
+          ? '<<Object#Date>>'
+          : value.toISOString()
+      }
       if (Array.isArray(value)) {
-        return value.map(sanitizeBinding)
+        return value.map((v) => sanitizeBinding(v, sanitizer))
       }
       if (value !== null && Object.getPrototypeOf(value) === Object.prototype) {
         const result: Record<string, any> = {}
         for (const [k, v] of Object.entries(value)) {
-          result[k] = sanitizeBinding(v)
+          result[k] = sanitizeBinding(v, sanitizer)
         }
         return result
       }
@@ -106,8 +130,11 @@ export function sanitizeBinding(value: any): any {
   }
 }
 
-export function sanitizeBindings(bindings: any[]): string {
-  return JSON.stringify(bindings.map(sanitizeBinding))
+export function sanitizeBindings(
+  bindings: any[],
+  sanitizer?: typeof sanitizeBinding,
+): string {
+  return JSON.stringify(bindings.map((v) => sanitizeBinding(v, sanitizer)))
 }
 
 const hasInstrumentedKey = '__opin_tel_init'
@@ -174,7 +201,10 @@ export function otelInitKnex(
     }
 
     if (captureBindings && Array.isArray(info.bindings)) {
-      toSet[ATTRS.BINDINGS] = sanitizeFn(info.bindings)
+      toSet[ATTRS.BINDINGS] = sanitizeFn(
+        info.bindings,
+        config?.sanitizeBindingFn,
+      )
       toSet[ATTRS.QUERY_HASH] = hashFn([info.sql, info.bindings])
     }
 

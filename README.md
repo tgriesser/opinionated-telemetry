@@ -1067,7 +1067,7 @@ app.use(
 
 ### Knex
 
-Listens to knex `query` events and enriches the active span with connection ID, transaction ID, pool stats, and sanitized query bindings. Bindings are sanitized by replacing strings with `string<length>` and class instances with `<<Object#ClassName>>` to avoid leaking sensitive data.
+Listens to knex `query` events and enriches the active span with connection ID, transaction ID, pool stats, and sanitized query bindings. Bindings are sanitized to avoid leaking sensitive data: strings become `string<length>` and class instances become `<<Object#ClassName>>`. A few non-sensitive values are kept as-is for correlation — `Date`s are serialized to ISO strings and UUID strings pass through unredacted.
 
 Returns a cleanup function to remove the listener.
 
@@ -1078,6 +1078,10 @@ import { queryRequestTag } from 'opinionated-telemetry'
 const cleanup = otelInitKnex(knexInstance, {
   captureBindings: true,
   capturePoolStats: true,
+  // Override sanitization for specific values; return undefined to fall through
+  // to the built-in behavior. Here: keep short enum-like strings readable.
+  sanitizeBindingFn: (value) =>
+    typeof value === 'string' && value.length <= 12 ? value : undefined,
   queryHook: ({ sql, bindings, stable, setAttribute }) => {
     setAttribute('db.query.request_tag', queryRequestTag(sql, bindings))
     setAttribute('db.query.method', sql.split(' ')[0].toUpperCase())
@@ -1087,12 +1091,14 @@ const cleanup = otelInitKnex(knexInstance, {
 // Later: cleanup() to remove the listener
 ```
 
-| Option             | Description                                                                                                                      |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| `captureBindings`  | Capture sanitized bindings as `db.query.sanitized_bindings` and a CRC32 hash as `db.query.hash`. Default: `true`                 |
-| `capturePoolStats` | Capture connection pool stats (`db.pool.used_count`, `db.pool.free_count`, etc.). Default: `true`                                |
-| `hashFn`           | Custom hash function for query+bindings. Default: CRC32 via `node:zlib`                                                          |
-| `queryHook`        | Custom hook called per query with `{ sql, bindings, stable, setAttribute }`. Use to set additional attributes like request tags. |
+| Option               | Description                                                                                                                                                                                                                                        |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `captureBindings`    | Capture sanitized bindings as `db.query.sanitized_bindings` and a CRC32 hash as `db.query.hash`. Default: `true`                                                                                                                                   |
+| `capturePoolStats`   | Capture connection pool stats (`db.pool.used_count`, `db.pool.free_count`, etc.). Default: `true`                                                                                                                                                  |
+| `hashFn`             | Custom hash function for query+bindings. Default: CRC32 via `node:zlib`                                                                                                                                                                            |
+| `sanitizeBindingFn`  | Custom per-binding sanitizer, applied recursively to every value (including nested array/object elements). Return a string to override the default sanitization; return anything else (e.g. `undefined`) to fall through to the built-in behavior. |
+| `sanitizeBindingsFn` | Custom function to sanitize the whole bindings array into a string. Replaces the default entirely; receives the per-binding `sanitizeBindingFn` as a second argument if you want to reuse it.                                                      |
+| `queryHook`          | Custom hook called per query with `{ sql, bindings, stable, setAttribute }`. Use to set additional attributes like request tags.                                                                                                                   |
 
 Span attributes set: `db.connection.id`, `db.tx.id`, `db.timeout`, `db.query.stable` (stabilized SQL shape), `db.query.stable_hash` (CRC32 of stable shape), `db.query.group_count`, `db.query.grouped_binding_count`, `db.query.sanitized_bindings`, `db.query.hash`, `db.pool.*`.
 
