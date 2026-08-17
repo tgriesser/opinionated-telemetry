@@ -1,4 +1,4 @@
-import { SpanImpl } from '@opentelemetry/sdk-trace-base/build/src/Span.js'
+import { SpanImpl } from '@opentelemetry/sdk-trace/build/src/Span.js'
 
 type HrTime = [number, number]
 
